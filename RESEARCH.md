@@ -185,7 +185,45 @@ roof shapes; project saving; scale/size controls (print bed presets); GPX track 
 rate-limit dependency); Manifold-guaranteed watertight output; deep-link/share a
 selection; optional self-hostable tile+geocode proxy config; i18n; embed mode.
 
-## 7. Sources
+## 7. Infrastructure
+
+Primary deployment on **Cloudflare**, treated as disposable. The repo — not the
+deployment — is the canonical artifact.
+
+**Free-tier fit:**
+
+- **Static hosting (Workers static assets / Pages)** — the app is a static bundle
+  and Cloudflare's free plan has *unmetered bandwidth*, so a traffic spike costs
+  nothing. Deploy from the GitHub repo via `wrangler`; per-branch preview
+  deployments included.
+- **Workers (100k req/day free)** — Phase 3's *optional* caching proxy in front of
+  Nominatim and Overpass, to respect their public usage policies (~1 req/s). The
+  Cache API keeps popular selections (everyone prints Manhattan and the
+  Matterhorn) from re-hitting upstreams.
+- **R2** — for Phase 3 self-hosted **PMTiles** (a single static file queried via
+  HTTP range requests — no tile server). Zero egress fees to the CDN. Reality
+  check: free tier is 10GB; a planet-scale OSM/Overture buildings build is
+  100GB+, i.e. ~$2–3/month in storage *if* we outgrow Protomaps' public builds.
+- **DNS + domain** for tinytopo.com at cost.
+
+Phases 0–2 need **no infrastructure at all** beyond static hosting: Overpass,
+Mapterhorn, AWS terrain tiles, and Nominatim are all called directly from the
+browser.
+
+**The caveat, on the record:** the original Map2Model also ran on Cloudflare — 
+visible in the archived pages — and it didn't help, because the attack was a
+legal letter to the human, not a packet to the infrastructure. A single
+Cloudflare account is itself a takedown target (a complaint to the host is the
+standard playbook). Survival comes from the repo, not the host:
+
+1. `wrangler.toml` and deploy docs live in the repo so anyone can stand up a
+   mirror in minutes.
+2. The app must always work with zero Cloudflare dependencies — deployable to
+   GitHub Pages or served from a local `dist/` with no Workers present
+   (CONTRIBUTING.md's "static-first, optional proxies" rule guarantees this).
+3. The official deployment is replaceable; the project is not.
+
+## 8. Sources
 
 - [Fabbaloo — Map2Model Shuts Down After Legal Notices](https://www.fabbaloo.com/news/3d-printable-map-service-map2model-shuts-down-after-legal-notices)
 - [3Druck — Map2Model offline: discontinued after legal notices](https://3druck.com/en/programs/map2model-offline-3d-printing-map-service-discontinued-due-to-legal-notices-37159804/)
