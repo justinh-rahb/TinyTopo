@@ -45,17 +45,13 @@ TinyTopo is a pure static site — that's a design guarantee, not an
 implementation detail. Host `dist/` anywhere: GitHub Pages, any web server,
 or a USB stick.
 
-The official deployment uses Cloudflare Workers static assets:
+The official deployment is GitHub Pages: the
+[deploy workflow](.github/workflows/deploy.yml) publishes `main` automatically
+— forks get the same free hosting by enabling Pages (Settings → Pages →
+Source: GitHub Actions).
 
-```sh
-npx wrangler login
-npm run deploy
-```
-
-Or from CI: the [deploy workflow](.github/workflows/deploy.yml) deploys `main`
-automatically when the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
-repository secrets are set; forks without secrets still build and simply skip
-the deploy step.
+A [wrangler.toml](wrangler.toml) is also included for Cloudflare Workers
+static assets (`npx wrangler login && npm run deploy`) if you prefer.
 
 ## Contributing
 
