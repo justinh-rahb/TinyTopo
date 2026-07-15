@@ -25,8 +25,37 @@ history of the original, how it worked, and the phased plan this project follows
 
 ## Status
 
-Pre-alpha. Currently: research and planning. See the phased plan in
-[RESEARCH.md](RESEARCH.md).
+Alpha. Working today: rectangle selection, place search, terrain + extruded
+buildings, Three.js preview, binary STL export. See the phased plan in
+[RESEARCH.md](RESEARCH.md) for what's next (multicolor 3MF, roads/water/green,
+Overture source).
+
+## Develop
+
+```sh
+npm install
+npm run dev        # Vite dev server on :5173
+npm run typecheck
+npm run build      # static bundle in dist/
+```
+
+## Deploy your own
+
+TinyTopo is a pure static site — that's a design guarantee, not an
+implementation detail. Host `dist/` anywhere: GitHub Pages, any web server,
+or a USB stick.
+
+The official deployment uses Cloudflare Workers static assets:
+
+```sh
+npx wrangler login
+npm run deploy
+```
+
+Or from CI: the [deploy workflow](.github/workflows/deploy.yml) deploys `main`
+automatically when the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+repository secrets are set; forks without secrets still build and simply skip
+the deploy step.
 
 ## Contributing
 

@@ -1,0 +1,10 @@
+# Cloudflare Workers (static assets) config.
+# The deployment is disposable by design — see RESEARCH.md §7. The app is a
+# plain static bundle: `npm run build` and host dist/ anywhere if you'd rather
+# not use Cloudflare at all.
+name = "tinytopo"
+compatibility_date = "2026-07-01"
+
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
