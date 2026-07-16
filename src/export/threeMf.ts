@@ -20,27 +20,33 @@ const RELS = `<?xml version="1.0" encoding="UTF-8"?>
 </Relationships>`;
 
 /**
- * Serialize bodies into a core-spec 3MF: one object per body with a
- * basematerial display color, so slicers (Bambu Studio, PrusaSlicer, Cura)
- * import separate colorable parts for multi-material printing.
+ * Serialize bodies into a multicolor 3MF that both worlds understand:
+ * - Core spec: leaf objects carry basematerial display colors, and a single
+ *   assembly object composes them, so PrusaSlicer/Cura import one model with
+ *   colored parts.
+ * - Bambu/Orca flavor: Metadata/model_settings.config declares each leaf as a
+ *   part with a 1-based `extruder`, so Bambu Studio maps parts to AMS filament
+ *   slots instead of dumping everything on filament 1.
  * Geometry is Z-up millimeters, which is exactly 3MF's coordinate space.
  */
 export async function toThreeMf(bodies: NamedBody[]): Promise<Blob> {
+  const assemblyId = bodies.length + 2; // ids: 1 = materials, 2..n+1 = leaves
+
   const xml: string[] = [];
   xml.push(
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">',
+    ' <metadata name="Application">TinyTopo</metadata>',
     ' <resources>',
     '  <basematerials id="1">',
   );
   for (const body of bodies) {
-    const hex = `#${body.color.toString(16).padStart(6, '0').toUpperCase()}`;
-    xml.push(`   <base name="${escapeXml(body.name)}" displaycolor="${hex}" />`);
+    xml.push(`   <base name="${escapeXml(body.name)}" displaycolor="${hexColor(body.color)}" />`);
   }
   xml.push('  </basematerials>');
 
   bodies.forEach((body, i) => {
-    const objectId = i + 2; // id 1 is the material group
+    const objectId = i + 2;
     xml.push(
       `  <object id="${objectId}" type="model" pid="1" pindex="${i}" name="${escapeXml(body.name)}">`,
       '   <mesh>',
@@ -50,20 +56,43 @@ export async function toThreeMf(bodies: NamedBody[]): Promise<Blob> {
     xml.push(...vertexLines, '    </vertices>', '    <triangles>', ...triangleLines, '    </triangles>', '   </mesh>', '  </object>');
   });
 
-  xml.push(' </resources>', ' <build>');
-  bodies.forEach((_, i) => xml.push(`  <item objectid="${i + 2}" />`));
-  xml.push(' </build>', '</model>');
+  xml.push(`  <object id="${assemblyId}" type="model" name="TinyTopo">`, '   <components>');
+  bodies.forEach((_, i) => xml.push(`    <component objectid="${i + 2}" />`));
+  xml.push('   </components>', '  </object>', ' </resources>', ' <build>', `  <item objectid="${assemblyId}" />`, ' </build>', '</model>');
+
+  const settings: string[] = [];
+  settings.push(
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<config>',
+    `  <object id="${assemblyId}">`,
+    '    <metadata key="name" value="TinyTopo"/>',
+    '    <metadata key="extruder" value="1"/>',
+  );
+  bodies.forEach((body, i) => {
+    settings.push(
+      `    <part id="${i + 2}" subtype="normal_part">`,
+      `      <metadata key="name" value="${escapeXml(body.name)}"/>`,
+      `      <metadata key="extruder" value="${i + 1}"/>`,
+      '    </part>',
+    );
+  });
+  settings.push('  </object>', '</config>');
 
   const zip = new JSZip();
   zip.file('[Content_Types].xml', CONTENT_TYPES);
   zip.file('_rels/.rels', RELS);
   zip.file('3D/3dmodel.model', xml.join('\n'));
+  zip.file('Metadata/model_settings.config', settings.join('\n'));
   return zip.generateAsync({
     type: 'blob',
     mimeType: 'model/3mf',
     compression: 'DEFLATE',
     compressionOptions: { level: 6 },
   });
+}
+
+function hexColor(color: number): string {
+  return `#${color.toString(16).padStart(6, '0').toUpperCase()}`;
 }
 
 /** Dedupe triangle-soup vertices (0.1µm grid) into indexed 3MF XML lines. */
