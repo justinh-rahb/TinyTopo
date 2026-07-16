@@ -17,6 +17,8 @@ export interface RoadLine {
 export interface MapFeatures {
   buildings: Feature<Polygon | MultiPolygon>[];
   roads: RoadLine[];
+  /** Paved airport areas (aprons) — rendered with the roads layer. */
+  aprons: Feature<Polygon | MultiPolygon>[];
   water: Feature<Polygon | MultiPolygon>[];
   green: Feature<Polygon | MultiPolygon>[];
 }
@@ -49,6 +51,12 @@ const ROAD_WIDTHS: Record<string, number> = {
 const RAIL_VALUES = new Set(['rail', 'light_rail', 'tram']);
 const RAIL_WIDTH_M = 4;
 
+/** Printed width in meters for aeroway centerlines. */
+const AEROWAY_WIDTHS: Record<string, number> = {
+  runway: 45,
+  taxiway: 18,
+};
+
 const GREEN_VALUES = new Set([
   'park', 'garden', 'golf_course', 'pitch', 'playground', 'village_green',
   'grass', 'meadow', 'forest', 'orchard', 'vineyard', 'cemetery',
@@ -72,6 +80,8 @@ export async function fetchMapFeatures(bounds: Bounds): Promise<MapFeatures> {
   relation["building:part"]["type"="multipolygon"](${bbox});
   way["highway"](${bbox});
   way["railway"~"^(rail|light_rail|tram)$"](${bbox});
+  way["aeroway"~"^(runway|taxiway|apron)$"](${bbox});
+  relation["aeroway"="apron"]["type"="multipolygon"](${bbox});
   way["natural"="water"](${bbox});
   relation["natural"="water"]["type"="multipolygon"](${bbox});
   way["waterway"="riverbank"](${bbox});
@@ -107,18 +117,40 @@ out skel qt;`;
   }
 
   const collection = osmtogeojson(data) as FeatureCollection;
-  const result: MapFeatures = { buildings: [], roads: [], water: [], green: [] };
+  const result: MapFeatures = { buildings: [], roads: [], aprons: [], water: [], green: [] };
 
   for (const f of collection.features) {
     const p = (f.properties ?? {}) as Record<string, string>;
     const isPolygonal = f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon';
 
+    // Prefer the mapper-surveyed width tag over class defaults, within reason.
+    const taggedWidth = (() => {
+      const w = parseFloat(String(p['width'] ?? ''));
+      return Number.isFinite(w) && w > 0 ? Math.min(Math.max(w, 2), 80) : null;
+    })();
+    const line = (defaultWidth: number) =>
+      result.roads.push({
+        points: (f.geometry as LineString).coordinates,
+        widthM: taggedWidth ?? defaultWidth,
+      });
+
     if (isPolygonal && (p['building'] || p['building:part'])) {
       result.buildings.push(f as Feature<Polygon | MultiPolygon>);
     } else if (f.geometry.type === 'LineString' && p['highway'] && ROAD_WIDTHS[p['highway']]) {
-      result.roads.push({ points: (f.geometry as LineString).coordinates, widthM: ROAD_WIDTHS[p['highway']] });
+      line(ROAD_WIDTHS[p['highway']]);
     } else if (f.geometry.type === 'LineString' && RAIL_VALUES.has(p['railway'])) {
-      result.roads.push({ points: (f.geometry as LineString).coordinates, widthM: RAIL_WIDTH_M });
+      line(RAIL_WIDTH_M);
+    } else if (f.geometry.type === 'LineString' && AEROWAY_WIDTHS[p['aeroway']]) {
+      // Width tags on runways are sometimes junk (e.g. 10m on a main
+      // runway) — never let a tag shrink an aeroway below ~2/3 of its
+      // class default.
+      const base = AEROWAY_WIDTHS[p['aeroway']];
+      result.roads.push({
+        points: (f.geometry as LineString).coordinates,
+        widthM: Math.max(taggedWidth ?? base, base * 0.66),
+      });
+    } else if (isPolygonal && p['aeroway'] === 'apron') {
+      result.aprons.push(f as Feature<Polygon | MultiPolygon>);
     } else if (isPolygonal && (p['natural'] === 'water' || p['waterway'] === 'riverbank' || p['water'])) {
       result.water.push(f as Feature<Polygon | MultiPolygon>);
     } else if (

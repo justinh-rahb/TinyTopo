@@ -8,6 +8,7 @@ import { buildBuildings } from './geometry/buildings';
 import {
   buildPolygonOverlay,
   buildRoadOverlay,
+  mergeSoups,
   ROAD_STYLE,
   WATER_STYLE,
   GREEN_STYLE,
@@ -114,7 +115,14 @@ async function generate(): Promise<void> {
       }
       if (layers.roads) {
         setStatus(`Buffering ${features.roads.length} roads…`);
-        add('Roads', buildRoadOverlay(features.roads, bounds, space, dem, ROAD_STYLE), COLORS.roads);
+        add(
+          'Roads',
+          mergeSoups(
+            buildRoadOverlay(features.roads, bounds, space, dem, ROAD_STYLE),
+            buildPolygonOverlay(features.aprons, bounds, space, dem, ROAD_STYLE),
+          ),
+          COLORS.roads,
+        );
       }
       if (layers.buildings) {
         setStatus(`Extruding ${features.buildings.length} buildings…`);
