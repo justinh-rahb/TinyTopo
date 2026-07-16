@@ -68,6 +68,8 @@ export async function fetchMapFeatures(bounds: Bounds): Promise<MapFeatures> {
 (
   way["building"](${bbox});
   relation["building"]["type"="multipolygon"](${bbox});
+  way["building:part"](${bbox});
+  relation["building:part"]["type"="multipolygon"](${bbox});
   way["highway"](${bbox});
   way["railway"~"^(rail|light_rail|tram)$"](${bbox});
   way["natural"="water"](${bbox});

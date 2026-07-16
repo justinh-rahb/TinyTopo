@@ -6,8 +6,11 @@ import { clipRing } from './clip';
 
 const DEFAULT_HEIGHT_M = 8;
 const METERS_PER_LEVEL = 3;
+const MAX_HEIGHT_M = 500;
 /** How far buildings sink below the terrain surface, in mm, to guarantee overlap. */
 const EMBED_MM = 1;
+/** Clipped footprints smaller than this print as fragile needles — skip them. */
+const MIN_FOOTPRINT_MM2 = 0.5;
 
 /** Extrude building footprints into printable solids seated on the terrain. */
 export function buildBuildings(
@@ -21,11 +24,17 @@ export function buildBuildings(
   for (const feature of features) {
     const polygons: Position[][][] =
       feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.coordinates;
-    const heightM = buildingHeightMeters(feature.properties ?? {});
+    const props = (feature.properties ?? {}) as Record<string, unknown>;
+    const heightM = buildingHeightMeters(props);
+    // building:part semantics: the solid spans min_height..height above ground.
+    const minHeightM = Math.min(parseLengthM(props['min_height']) ?? 0, heightM);
 
     for (const rings of polygons) {
       const outer = clipRing(rings[0] ?? [], bounds);
       if (outer.length < 3) continue;
+
+      const points = outer.map(([lon, lat]) => new THREE.Vector2(space.x(lon), space.y(lat)));
+      if (Math.abs(polygonAreaMm2(points)) < MIN_FOOTPRINT_MM2) continue;
 
       // Seat the solid against the terrain under the (clipped) footprint.
       let minZ = Infinity;
@@ -35,10 +44,12 @@ export function buildBuildings(
         if (z < minZ) minZ = z;
         if (z > maxZ) maxZ = z;
       }
-      const bottom = Math.max(0, minZ - EMBED_MM);
-      const top = maxZ + heightM * space.mmPerMeter * space.zFactor;
+      const scaleZ = space.mmPerMeter * space.zFactor;
+      const bottom = minHeightM > 0 ? maxZ + minHeightM * scaleZ : Math.max(0, minZ - EMBED_MM);
+      const top = maxZ + heightM * scaleZ;
+      if (top - bottom < 0.05) continue;
 
-      const shape = new THREE.Shape(outer.map(([lon, lat]) => new THREE.Vector2(space.x(lon), space.y(lat))));
+      const shape = new THREE.Shape(points);
       for (const hole of rings.slice(1)) {
         const clipped = clipRing(hole, bounds);
         if (clipped.length >= 3) {
@@ -65,11 +76,35 @@ export function buildBuildings(
 }
 
 function buildingHeightMeters(props: Record<string, unknown>): number {
-  const explicit = parseFloat(String(props['height'] ?? props['building:height'] ?? ''));
-  if (Number.isFinite(explicit) && explicit > 0) return Math.min(explicit, 500);
+  const explicit = parseLengthM(props['height'] ?? props['building:height']);
+  if (explicit !== null && explicit > 0) return Math.min(explicit, MAX_HEIGHT_M);
   const levels = parseFloat(String(props['building:levels'] ?? ''));
-  if (Number.isFinite(levels) && levels > 0) return Math.min(levels * METERS_PER_LEVEL, 500);
+  if (Number.isFinite(levels) && levels > 0) return Math.min(levels * METERS_PER_LEVEL, MAX_HEIGHT_M);
   return DEFAULT_HEIGHT_M;
+}
+
+/**
+ * Parse an OSM length tag to meters. Handles bare numbers (meters), comma
+ * decimals, explicit "m", and feet ("25 ft", "25'"). Anything else -> null.
+ */
+function parseLengthM(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  const s = String(value).trim().toLowerCase().replace(',', '.');
+  const m = s.match(/^(-?\d+(?:\.\d+)?)\s*(m|ft|')?$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  return m[2] === 'ft' || m[2] === "'" ? n * 0.3048 : n;
+}
+
+function polygonAreaMm2(ring: THREE.Vector2[]): number {
+  let sum = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return sum / 2;
 }
 
 function appendPositions(out: number[], geometry: THREE.BufferGeometry): void {
