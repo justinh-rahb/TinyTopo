@@ -78,11 +78,24 @@ export async function toThreeMf(bodies: NamedBody[]): Promise<Blob> {
   });
   settings.push('  </object>', '</config>');
 
+  // Minimal project settings: gives Bambu Studio our palette for its
+  // filament slots ("color data" in the third-party import path) without
+  // shipping printer/process settings that would stomp the user's own.
+  const projectSettings = JSON.stringify(
+    {
+      filament_colour: bodies.map((b) => hexColor(b.color)),
+      filament_type: bodies.map(() => 'PLA'),
+    },
+    null,
+    2,
+  );
+
   const zip = new JSZip();
   zip.file('[Content_Types].xml', CONTENT_TYPES);
   zip.file('_rels/.rels', RELS);
   zip.file('3D/3dmodel.model', xml.join('\n'));
   zip.file('Metadata/model_settings.config', settings.join('\n'));
+  zip.file('Metadata/project_settings.config', projectSettings);
   return zip.generateAsync({
     type: 'blob',
     mimeType: 'model/3mf',
