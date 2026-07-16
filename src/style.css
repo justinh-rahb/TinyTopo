@@ -97,6 +97,16 @@ body {
   background: var(--border);
 }
 
+#github-link {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+#github-link:hover {
+  color: var(--text);
+}
+
 #panes {
   flex: 1;
   display: flex;
