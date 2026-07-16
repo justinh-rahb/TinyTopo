@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@geoman-io/leaflet-geoman-free": "^2.17.0",
+    "jszip": "^3.10.1",
     "leaflet": "^1.9.4",
     "osmtogeojson": "^3.0.0-beta.5",
     "three": "^0.166.0"

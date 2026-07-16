@@ -12,8 +12,9 @@ import {
   WATER_STYLE,
   GREEN_STYLE,
 } from './geometry/overlays';
-import { Preview, PreviewItem } from './preview';
+import { Preview } from './preview';
 import { downloadStl } from './export/stl';
+import { downloadThreeMf, NamedBody } from './export/threeMf';
 import { createMap, setupSearch } from './map';
 
 const COLORS = {
@@ -28,12 +29,13 @@ const el = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(
 
 const btnGenerate = el<HTMLButtonElement>('#btn-generate');
 const btnDownload = el<HTMLButtonElement>('#btn-download');
+const btnDownload3mf = el<HTMLButtonElement>('#btn-download-3mf');
 const status = el<HTMLSpanElement>('#status');
 const mapHint = el<HTMLDivElement>('#map-hint');
 const previewEmpty = el<HTMLDivElement>('#preview-empty');
 
 let selection: Bounds | null = null;
-let exportGeometries: THREE.BufferGeometry[] = [];
+let exportBodies: NamedBody[] = [];
 let generating = false;
 
 const mapController = createMap(el('#map'), (bounds) => {
@@ -57,6 +59,7 @@ async function generate(): Promise<void> {
   generating = true;
   btnGenerate.disabled = true;
   btnDownload.disabled = true;
+  btnDownload3mf.disabled = true;
 
   try {
     const widthMm = Number(el<HTMLInputElement>('#opt-width').value) || 120;
@@ -91,36 +94,39 @@ async function generate(): Promise<void> {
     const depthMm = (hM / wM) * widthMm;
     const grid = sampleGrid(bounds, dem, widthMm, depthMm);
     const space = new ModelSpace(bounds, widthMm, zFactor, baseMm, grid.minElevation);
-    const items: PreviewItem[] = [{ geometry: buildTerrain(grid, space), color: COLORS.terrain }];
+    const bodies: NamedBody[] = [
+      { name: 'Terrain', geometry: buildTerrain(grid, space), color: COLORS.terrain },
+    ];
 
     if (features) {
-      const add = (geometry: THREE.BufferGeometry | null, color: number) => {
-        if (geometry) items.push({ geometry, color });
+      const add = (name: string, geometry: THREE.BufferGeometry | null, color: number) => {
+        if (geometry) bodies.push({ name, geometry, color });
       };
       if (layers.green) {
         setStatus(`Draping ${features.green.length} green areas…`);
-        add(buildPolygonOverlay(features.green, bounds, space, dem, GREEN_STYLE), COLORS.green);
+        add('Greenery', buildPolygonOverlay(features.green, bounds, space, dem, GREEN_STYLE), COLORS.green);
       }
       if (layers.water) {
         setStatus(`Draping ${features.water.length} water bodies…`);
-        add(buildPolygonOverlay(features.water, bounds, space, dem, WATER_STYLE), COLORS.water);
+        add('Water', buildPolygonOverlay(features.water, bounds, space, dem, WATER_STYLE), COLORS.water);
       }
       if (layers.roads) {
         setStatus(`Buffering ${features.roads.length} roads…`);
-        add(buildRoadOverlay(features.roads, bounds, space, dem, ROAD_STYLE), COLORS.roads);
+        add('Roads', buildRoadOverlay(features.roads, bounds, space, dem, ROAD_STYLE), COLORS.roads);
       }
       if (layers.buildings) {
         setStatus(`Extruding ${features.buildings.length} buildings…`);
-        add(buildBuildings(features.buildings, bounds, space, dem), COLORS.buildings);
+        add('Buildings', buildBuildings(features.buildings, bounds, space, dem), COLORS.buildings);
       }
     }
 
-    preview.show(items);
+    preview.show(bodies);
     previewEmpty.hidden = true;
-    exportGeometries = items.map((i) => i.geometry);
+    exportBodies = bodies;
     btnDownload.disabled = false;
+    btnDownload3mf.disabled = false;
 
-    const tris = exportGeometries.reduce((n, g) => n + g.getAttribute('position').count / 3, 0);
+    const tris = bodies.reduce((n, b) => n + b.geometry.getAttribute('position').count / 3, 0);
     setStatus(
       `Done — ${space.widthMm.toFixed(0)}×${space.depthMm.toFixed(0)} mm, ` +
         `${Math.round(tris).toLocaleString()} triangles (${dem.source})`,
@@ -136,7 +142,12 @@ async function generate(): Promise<void> {
 
 btnGenerate.addEventListener('click', () => void generate());
 btnDownload.addEventListener('click', () => {
-  if (exportGeometries.length > 0) downloadStl(exportGeometries, 'tinytopo.stl');
+  if (exportBodies.length > 0) {
+    downloadStl(exportBodies.map((b) => b.geometry), 'tinytopo.stl');
+  }
+});
+btnDownload3mf.addEventListener('click', () => {
+  if (exportBodies.length > 0) void downloadThreeMf(exportBodies, 'tinytopo.3mf');
 });
 
 if (import.meta.env.DEV) {
@@ -151,7 +162,11 @@ if (import.meta.env.DEV) {
     generate: () => generate(),
     stl: async () => {
       const { toBinaryStl } = await import('./export/stl');
-      return toBinaryStl(exportGeometries);
+      return toBinaryStl(exportBodies.map((b) => b.geometry));
+    },
+    threeMf: async () => {
+      const { toThreeMf } = await import('./export/threeMf');
+      return toThreeMf(exportBodies);
     },
   };
 }
