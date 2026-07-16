@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const TERRAIN_COLOR = 0x8f8674;
-const BUILDING_COLOR = 0xded8cd;
+export interface PreviewItem {
+  geometry: THREE.BufferGeometry;
+  color: number;
+}
 
 /** Three.js viewport for the generated model. Geometries are Z-up mm. */
 export class Preview {
@@ -37,15 +39,13 @@ export class Preview {
     });
   }
 
-  show(terrain: THREE.BufferGeometry, buildings: THREE.BufferGeometry | null): void {
+  /** Render layered geometries; the first item is used to frame the camera. */
+  show(items: PreviewItem[]): void {
     this.clear();
-    this.group.add(
-      new THREE.Mesh(terrain, new THREE.MeshStandardMaterial({ color: TERRAIN_COLOR, flatShading: false })),
-    );
-    if (buildings) {
-      this.group.add(new THREE.Mesh(buildings, new THREE.MeshStandardMaterial({ color: BUILDING_COLOR })));
+    for (const { geometry, color } of items) {
+      this.group.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color })));
     }
-    this.fit(terrain);
+    if (items.length > 0) this.fit(items[0].geometry);
   }
 
   private fit(reference: THREE.BufferGeometry): void {

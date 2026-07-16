@@ -67,6 +67,16 @@ export class ModelSpace {
   z(elevationM: number): number {
     return this.baseMm + (elevationM - this.minElevation) * this.mmPerMeter * this.zFactor;
   }
+
+  /** Inverse of x(): model X in mm -> longitude. */
+  lon(xMm: number): number {
+    return this.lon0 + xMm / (this.mPerDegLon * this.mmPerMeter);
+  }
+
+  /** Inverse of y(): model Y in mm -> latitude. */
+  lat(yMm: number): number {
+    return this.lat0 + yMm / (M_PER_DEG_LAT * this.mmPerMeter);
+  }
 }
 
 /** Web-mercator slippy tile helpers. */
