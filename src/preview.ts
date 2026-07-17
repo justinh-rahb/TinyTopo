@@ -42,9 +42,17 @@ export class Preview {
   /** Render layered geometries; the first item is used to frame the camera. */
   show(items: PreviewItem[]): void {
     this.clear();
-    for (const { geometry, color } of items) {
-      this.group.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color })));
-    }
+    items.forEach(({ geometry, color }, i) => {
+      // Bodies share coplanar faces (base/terrain walls, embedded slabs);
+      // bias later layers slightly toward the camera to avoid z-fighting.
+      const material = new THREE.MeshStandardMaterial({
+        color,
+        polygonOffset: true,
+        polygonOffsetFactor: -i,
+        polygonOffsetUnits: -i,
+      });
+      this.group.add(new THREE.Mesh(geometry, material));
+    });
     if (items.length > 0) this.fit(items[0].geometry);
   }
 

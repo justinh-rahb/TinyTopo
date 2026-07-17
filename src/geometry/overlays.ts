@@ -21,6 +21,10 @@ export const WATER_STYLE: SlabStyle = { liftMm: 0.05, thicknessMm: 1.2 };
 export const GREEN_STYLE: SlabStyle = { liftMm: 0.15, thicknessMm: 1.2 };
 
 const MIN_AREA_MM2 = 0.8;
+/** Cell size for draping polygons over relief; smaller follows terrain closer. */
+const DRAPE_CELL_MM = 5;
+/** Terrain height variation below which a single flat slab is close enough. */
+const FLAT_ENOUGH_MM = 0.5;
 
 /** Build one geometry from polygonal features (water, green). */
 export function buildPolygonOverlay(
@@ -41,7 +45,7 @@ export function buildPolygonOverlay(
         .slice(1)
         .map((h) => clipRing(h, bounds))
         .filter((h) => h.length >= 3);
-      appendSlab(positions, outer, holes, space, dem, style);
+      appendSlabCelled(positions, outer, holes, space, dem, style);
     }
   }
   return toGeometry(positions);
@@ -67,9 +71,71 @@ export function buildRoadOverlay(
     const ring = ringMm.map(([x, y]) => [space.lon(x), space.lat(y)] as Position);
     const clipped = clipRing(ring, bounds);
     if (clipped.length < 3) continue;
-    appendSlab(positions, clipped, [], space, dem, style);
+    appendSlabCelled(positions, clipped, [], space, dem, style);
   }
   return toGeometry(positions);
+}
+
+/**
+ * Drape a polygon over relief by clipping it into grid cells, each draped as
+ * its own small watertight slab (touching shells union in the slicer, same
+ * as adjacent buildings). Large flat triangles no longer span hills — the
+ * fix for "the green layer struggles on steep terrain".
+ */
+function appendSlabCelled(
+  out: number[],
+  outer: Position[],
+  holes: Position[][],
+  space: ModelSpace,
+  dem: Dem,
+  style: SlabStyle,
+): void {
+  let lonMin = Infinity, lonMax = -Infinity, latMin = Infinity, latMax = -Infinity;
+  for (const [lon, lat] of outer) {
+    if (lon < lonMin) lonMin = lon;
+    if (lon > lonMax) lonMax = lon;
+    if (lat < latMin) latMin = lat;
+    if (lat > latMax) latMax = lat;
+  }
+  const wMm = space.x(lonMax) - space.x(lonMin);
+  const hMm = space.y(latMax) - space.y(latMin);
+
+  // Small feature, or terrain that's flat under the bounding box: one slab.
+  if (wMm <= DRAPE_CELL_MM * 1.5 && hMm <= DRAPE_CELL_MM * 1.5) {
+    appendSlab(out, outer, holes, space, dem, style);
+    return;
+  }
+  let zMin = Infinity, zMax = -Infinity;
+  for (let j = 0; j < 4; j++) {
+    for (let i = 0; i < 4; i++) {
+      const z = dem.sample(lonMin + ((lonMax - lonMin) * i) / 3, latMin + ((latMax - latMin) * j) / 3);
+      if (z < zMin) zMin = z;
+      if (z > zMax) zMax = z;
+    }
+  }
+  if ((zMax - zMin) * space.mmPerMeter * space.zFactor < FLAT_ENOUGH_MM) {
+    appendSlab(out, outer, holes, space, dem, style);
+    return;
+  }
+
+  const cellsX = Math.max(1, Math.ceil(wMm / DRAPE_CELL_MM));
+  const cellsY = Math.max(1, Math.ceil(hMm / DRAPE_CELL_MM));
+  const dLon = (lonMax - lonMin) / cellsX;
+  const dLat = (latMax - latMin) / cellsY;
+  for (let cy = 0; cy < cellsY; cy++) {
+    for (let cx = 0; cx < cellsX; cx++) {
+      const cell = {
+        west: lonMin + dLon * cx,
+        east: lonMin + dLon * (cx + 1),
+        south: latMin + dLat * cy,
+        north: latMin + dLat * (cy + 1),
+      };
+      const outerC = clipRing(outer, cell);
+      if (outerC.length < 3) continue;
+      const holesC = holes.map((h) => clipRing(h, cell)).filter((h) => h.length >= 3);
+      appendSlab(out, outerC, holesC, space, dem, style, 0.05);
+    }
+  }
 }
 
 /**
@@ -123,9 +189,16 @@ function appendSlab(
   space: ModelSpace,
   dem: Dem,
   style: SlabStyle,
+  minAreaMm2: number = MIN_AREA_MM2,
 ): void {
+  // Clipping can emit duplicate consecutive/closing vertices, and
+  // triangulateShape mutates rings to drop them — sanitize first so our
+  // parallel ring arrays stay aligned with the triangulation.
+  outer = cleanRing(outer);
+  holes = holes.map(cleanRing).filter((h) => h.length >= 3);
+  if (outer.length < 3) return;
   const outerV2 = outer.map(([lon, lat]) => new THREE.Vector2(space.x(lon), space.y(lat)));
-  if (Math.abs(signedArea(outerV2)) < MIN_AREA_MM2) return;
+  if (Math.abs(signedArea(outerV2)) < minAreaMm2) return;
 
   // earcut convention: outer CCW, holes CW.
   const oRing = signedArea(outerV2) < 0 ? [...outer].reverse() : outer;
@@ -186,6 +259,23 @@ function appendSlab(
     }
     offset += ring.length;
   }
+}
+
+/** Drop duplicate consecutive vertices and any closing vertex. */
+function cleanRing(ring: Position[]): Position[] {
+  const out: Position[] = [];
+  for (const p of ring) {
+    const last = out[out.length - 1];
+    if (!last || last[0] !== p[0] || last[1] !== p[1]) out.push(p);
+  }
+  while (
+    out.length > 1 &&
+    out[0][0] === out[out.length - 1][0] &&
+    out[0][1] === out[out.length - 1][1]
+  ) {
+    out.pop();
+  }
+  return out;
 }
 
 function signedArea(ring: THREE.Vector2[]): number {
