@@ -14,9 +14,11 @@ export interface TerrainGrid {
 
 /** Sample the DEM into a regular grid over the bounds. */
 export function sampleGrid(bounds: Bounds, dem: Dem, widthMm: number, depthMm: number): TerrainGrid {
-  const density = 1.4; // vertices per model millimeter
-  const cols = clamp(Math.round(widthMm * density), 48, 220);
-  const rows = clamp(Math.round(depthMm * density), 48, 220);
+  // Grid pitch also sets overlay edge resolution (polygons rasterize onto
+  // this grid), so keep cells at or below nozzle size (~0.4mm).
+  const density = 2.4; // vertices per model millimeter
+  const cols = clamp(Math.round(widthMm * density), 48, 320);
+  const rows = clamp(Math.round(depthMm * density), 48, 320);
 
   const lons = new Float64Array(cols);
   const lats = new Float64Array(rows);

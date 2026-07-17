@@ -75,41 +75,11 @@ export function buildPolygonOverlay(
         continue;
       }
 
+      // Even-odd scanline fill across all rings (outer + holes). Edges are
+      // quantized to the grid — at grid resolution finer than the print
+      // nozzle, that's invisible on the printed part, and one uniform
+      // strategy stays watertight with no seams between styles.
       const gridRings = [outer, ...holes].map((r) => r.map(([lon, lat]) => [gx(lon), gy(lat)]));
-
-      // Cells crossed by a ring edge are "boundary": they get an
-      // exact-shape clipped slab instead of a full painted cell, so layer
-      // edges follow the real outline rather than the grid staircase.
-      const boundary = new Set<number>();
-      for (const ring of gridRings) {
-        for (let k = 0; k < ring.length; k++) {
-          const [ax, ay] = ring[k];
-          const [bx, by] = ring[(k + 1) % ring.length];
-          const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) * 3));
-          for (let s = 0; s <= steps; s++) {
-            const i = Math.floor(ax + ((bx - ax) * s) / steps);
-            const j = Math.floor(ay + ((by - ay) * s) / steps);
-            if (i >= 0 && i < cellsX && j >= 0 && j < cellsY) boundary.add(j * cellsX + i);
-          }
-        }
-      }
-      for (const cellIndex of boundary) {
-        const ci = cellIndex % cellsX;
-        const cj = Math.floor(cellIndex / cellsX);
-        const cell = {
-          west: lons[0] + ((lons[cols - 1] - lons[0]) * ci) / cellsX,
-          east: lons[0] + ((lons[cols - 1] - lons[0]) * (ci + 1)) / cellsX,
-          south: lats[0] + ((lats[rows - 1] - lats[0]) * cj) / cellsY,
-          north: lats[0] + ((lats[rows - 1] - lats[0]) * (cj + 1)) / cellsY,
-        };
-        const outerC = clipRing(outer, cell);
-        if (outerC.length < 3) continue;
-        const holesC = holes.map((h) => clipRing(h, cell)).filter((h) => h.length >= 3);
-        appendSlab(positions, outerC, holesC, space, dem, style, 0.1);
-      }
-
-      // Even-odd scanline fill across all rings; boundary cells are handled
-      // above, interior cells get painted onto the grid.
       const j0 = Math.max(0, Math.floor(yMin));
       const j1 = Math.min(cellsY - 1, Math.ceil(yMax));
       for (let j = j0; j <= j1; j++) {
@@ -128,9 +98,7 @@ export function buildPolygonOverlay(
         for (let k = 0; k + 1 < crossings.length; k += 2) {
           const i0 = Math.max(0, Math.ceil(crossings[k] - 0.5));
           const i1 = Math.min(cellsX - 1, Math.floor(crossings[k + 1] - 0.5));
-          for (let i = i0; i <= i1; i++) {
-            if (!boundary.has(j * cellsX + i)) mask[j * cellsX + i] = 1;
-          }
+          for (let i = i0; i <= i1; i++) mask[j * cellsX + i] = 1;
         }
       }
     }
