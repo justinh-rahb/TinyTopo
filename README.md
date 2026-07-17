@@ -16,6 +16,8 @@ history of the original, how it worked, and the phased plan this project follows
 
 ## Data sources
 
+Full details in [docs/SOURCES.md](docs/SOURCES.md).
+
 - **[OpenStreetMap](https://www.openstreetmap.org/copyright)** — buildings, roads,
   water, land use (ODbL)
 - **[Overture Maps](https://overturemaps.org/)** — alternative building source (planned)
