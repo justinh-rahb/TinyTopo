@@ -52,8 +52,10 @@ export async function toThreeMf(bodies: NamedBody[]): Promise<Blob> {
       '   <mesh>',
       '    <vertices>',
     );
+    // join() rather than push(...lines): spreading 100k+ elements as
+    // arguments overflows the call stack on large meshes.
     const { vertexLines, triangleLines } = indexMesh(body.geometry);
-    xml.push(...vertexLines, '    </vertices>', '    <triangles>', ...triangleLines, '    </triangles>', '   </mesh>', '  </object>');
+    xml.push(vertexLines.join('\n'), '    </vertices>', '    <triangles>', triangleLines.join('\n'), '    </triangles>', '   </mesh>', '  </object>');
   });
 
   xml.push(`  <object id="${assemblyId}" type="model" name="TinyTopo">`, '   <components>');

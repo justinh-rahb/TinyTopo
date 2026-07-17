@@ -4,6 +4,7 @@ import { Bounds, ModelSpace } from '../geo';
 import type { Dem } from '../elevation';
 import { clipRing } from './clip';
 import type { RoadLine } from '../overpass';
+import type { TerrainGrid } from './terrain';
 
 /**
  * Surface overlays (roads, water, greenery) are thin slabs draped over the
@@ -26,14 +27,29 @@ const DRAPE_CELL_MM = 5;
 /** Terrain height variation below which a single flat slab is close enough. */
 const FLAT_ENOUGH_MM = 0.5;
 
-/** Build one geometry from polygonal features (water, green). */
+/**
+ * Build one geometry from polygonal features (water, green, aprons) by
+ * painting them onto the terrain grid: polygons rasterize to a cell mask and
+ * the overlay top reuses the terrain's own vertex heights (plus lift), so
+ * the surface follows the relief exactly — no poke-through, no seams.
+ * Features smaller than a couple of grid cells are draped as slabs instead
+ * so pitches and ponds don't vanish in rasterization.
+ */
 export function buildPolygonOverlay(
   features: Feature<Polygon | MultiPolygon>[],
   bounds: Bounds,
   space: ModelSpace,
   dem: Dem,
+  grid: TerrainGrid,
   style: SlabStyle,
 ): THREE.BufferGeometry | null {
+  const { cols, rows, lons, lats } = grid;
+  const cellsX = cols - 1;
+  const cellsY = rows - 1;
+  const mask = new Uint8Array(cellsX * cellsY);
+  const gx = (lon: number) => ((lon - lons[0]) / (lons[cols - 1] - lons[0])) * cellsX;
+  const gy = (lat: number) => ((lat - lats[0]) / (lats[rows - 1] - lats[0])) * cellsY;
+
   const positions: number[] = [];
   for (const feature of features) {
     const polygons: Position[][][] =
@@ -45,10 +61,90 @@ export function buildPolygonOverlay(
         .slice(1)
         .map((h) => clipRing(h, bounds))
         .filter((h) => h.length >= 3);
-      appendSlabCelled(positions, outer, holes, space, dem, style);
+
+      let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+      for (const [lon, lat] of outer) {
+        const x = gx(lon), y = gy(lat);
+        if (x < xMin) xMin = x;
+        if (x > xMax) xMax = x;
+        if (y < yMin) yMin = y;
+        if (y > yMax) yMax = y;
+      }
+      if (xMax - xMin < 2 || yMax - yMin < 2) {
+        appendSlab(positions, outer, holes, space, dem, style, 0.1);
+        continue;
+      }
+
+      // Even-odd scanline fill across all rings (outer + holes).
+      const gridRings = [outer, ...holes].map((r) => r.map(([lon, lat]) => [gx(lon), gy(lat)]));
+      const j0 = Math.max(0, Math.floor(yMin));
+      const j1 = Math.min(cellsY - 1, Math.ceil(yMax));
+      for (let j = j0; j <= j1; j++) {
+        const yc = j + 0.5;
+        const crossings: number[] = [];
+        for (const ring of gridRings) {
+          for (let k = 0; k < ring.length; k++) {
+            const [ax, ay] = ring[k];
+            const [bx, by] = ring[(k + 1) % ring.length];
+            if (ay <= yc !== by <= yc) {
+              crossings.push(ax + ((yc - ay) * (bx - ax)) / (by - ay));
+            }
+          }
+        }
+        crossings.sort((a, b) => a - b);
+        for (let k = 0; k + 1 < crossings.length; k += 2) {
+          const i0 = Math.max(0, Math.ceil(crossings[k] - 0.5));
+          const i1 = Math.min(cellsX - 1, Math.floor(crossings[k + 1] - 0.5));
+          for (let i = i0; i <= i1; i++) mask[j * cellsX + i] = 1;
+        }
+      }
     }
   }
+
+  emitMask(positions, mask, grid, space, style);
   return toGeometry(positions);
+}
+
+/** Emit the masked cells as one watertight terrain-following layer. */
+function emitMask(
+  out: number[],
+  mask: Uint8Array,
+  grid: TerrainGrid,
+  space: ModelSpace,
+  style: SlabStyle,
+): void {
+  const { cols, rows, lons, lats, elev } = grid;
+  const cellsX = cols - 1;
+  const cellsY = rows - 1;
+  const X = new Float32Array(cols);
+  for (let i = 0; i < cols; i++) X[i] = space.x(lons[i]);
+  const Y = new Float32Array(rows);
+  for (let j = 0; j < rows; j++) Y[j] = space.y(lats[j]);
+  const zTop = (i: number, j: number) => space.z(elev[j * cols + i]) + style.liftMm;
+  const zBot = (i: number, j: number) => Math.max(0, zTop(i, j) - style.thicknessMm);
+  const at = (i: number, j: number) => (j >= 0 && j < cellsY && i >= 0 && i < cellsX ? mask[j * cellsX + i] : 0);
+
+  const wall = (ai: number, aj: number, bi: number, bj: number) => {
+    // Walking a->b with the solid on the left gives outward normals.
+    out.push(X[ai], Y[aj], zBot(ai, aj), X[bi], Y[bj], zBot(bi, bj), X[bi], Y[bj], zTop(bi, bj));
+    out.push(X[ai], Y[aj], zBot(ai, aj), X[bi], Y[bj], zTop(bi, bj), X[ai], Y[aj], zTop(ai, aj));
+  };
+
+  for (let j = 0; j < cellsY; j++) {
+    for (let i = 0; i < cellsX; i++) {
+      if (!at(i, j)) continue;
+      // Top (CCW from above) and mirrored bottom.
+      out.push(X[i], Y[j], zTop(i, j), X[i + 1], Y[j], zTop(i + 1, j), X[i + 1], Y[j + 1], zTop(i + 1, j + 1));
+      out.push(X[i], Y[j], zTop(i, j), X[i + 1], Y[j + 1], zTop(i + 1, j + 1), X[i], Y[j + 1], zTop(i, j + 1));
+      out.push(X[i + 1], Y[j + 1], zBot(i + 1, j + 1), X[i + 1], Y[j], zBot(i + 1, j), X[i], Y[j], zBot(i, j));
+      out.push(X[i], Y[j + 1], zBot(i, j + 1), X[i + 1], Y[j + 1], zBot(i + 1, j + 1), X[i], Y[j], zBot(i, j));
+
+      if (!at(i, j - 1)) wall(i, j, i + 1, j); // south edge
+      if (!at(i + 1, j)) wall(i + 1, j, i + 1, j + 1); // east edge
+      if (!at(i, j + 1)) wall(i + 1, j + 1, i, j + 1); // north edge
+      if (!at(i - 1, j)) wall(i, j + 1, i, j); // west edge
+    }
+  }
 }
 
 /** Build one geometry from buffered road/rail centerlines. */

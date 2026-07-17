@@ -107,11 +107,11 @@ async function generate(): Promise<void> {
       };
       if (layers.green) {
         setStatus(`Draping ${features.green.length} green areas…`);
-        add('Greenery', buildPolygonOverlay(features.green, bounds, space, dem, GREEN_STYLE), COLORS.green);
+        add('Greenery', buildPolygonOverlay(features.green, bounds, space, dem, grid, GREEN_STYLE), COLORS.green);
       }
       if (layers.water) {
         setStatus(`Draping ${features.water.length} water bodies…`);
-        add('Water', buildPolygonOverlay(features.water, bounds, space, dem, WATER_STYLE), COLORS.water);
+        add('Water', buildPolygonOverlay(features.water, bounds, space, dem, grid, WATER_STYLE), COLORS.water);
       }
       if (layers.roads) {
         setStatus(`Buffering ${features.roads.length} roads…`);
@@ -119,7 +119,7 @@ async function generate(): Promise<void> {
           'Roads',
           mergeSoups(
             buildRoadOverlay(features.roads, bounds, space, dem, ROAD_STYLE),
-            buildPolygonOverlay(features.aprons, bounds, space, dem, ROAD_STYLE),
+            buildPolygonOverlay(features.aprons, bounds, space, dem, grid, ROAD_STYLE),
           ),
           COLORS.roads,
         );
