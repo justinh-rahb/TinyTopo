@@ -105,21 +105,30 @@ async function generate(): Promise<void> {
       const add = (name: string, geometry: THREE.BufferGeometry | null, color: number) => {
         if (geometry) bodies.push({ name, geometry, color });
       };
-      if (layers.green) {
-        setStatus(`Draping ${features.green.length} green areas…`);
-        add('Greenery', buildPolygonOverlay(features.green, bounds, space, dem, grid, GREEN_STYLE), COLORS.green);
-      }
+      // Water is computed first so greenery can be excluded from its cells
+      // (reserves/forests in OSM often contain their lakes), but body order
+      // stays stable so filament slot mapping doesn't shift.
+      let water = null;
       if (layers.water) {
         setStatus(`Draping ${features.water.length} water bodies…`);
-        add('Water', buildPolygonOverlay(features.water, bounds, space, dem, grid, WATER_STYLE), COLORS.water);
+        water = buildPolygonOverlay(features.water, bounds, space, dem, grid, WATER_STYLE);
       }
+      if (layers.green) {
+        setStatus(`Draping ${features.green.length} green areas…`);
+        add(
+          'Greenery',
+          buildPolygonOverlay(features.green, bounds, space, dem, grid, GREEN_STYLE, water?.mask).geometry,
+          COLORS.green,
+        );
+      }
+      if (water) add('Water', water.geometry, COLORS.water);
       if (layers.roads) {
         setStatus(`Buffering ${features.roads.length} roads…`);
         add(
           'Roads',
           mergeSoups(
             buildRoadOverlay(features.roads, bounds, space, dem, ROAD_STYLE),
-            buildPolygonOverlay(features.aprons, bounds, space, dem, grid, ROAD_STYLE),
+            buildPolygonOverlay(features.aprons, bounds, space, dem, grid, ROAD_STYLE).geometry,
           ),
           COLORS.roads,
         );

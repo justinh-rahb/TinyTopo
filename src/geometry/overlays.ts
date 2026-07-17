@@ -35,6 +35,12 @@ const FLAT_ENOUGH_MM = 0.5;
  * Features smaller than a couple of grid cells are draped as slabs instead
  * so pitches and ponds don't vanish in rasterization.
  */
+export interface OverlayResult {
+  geometry: THREE.BufferGeometry | null;
+  /** Grid cells this layer claimed — pass as `exclude` to lower layers. */
+  mask: Uint8Array;
+}
+
 export function buildPolygonOverlay(
   features: Feature<Polygon | MultiPolygon>[],
   bounds: Bounds,
@@ -42,7 +48,8 @@ export function buildPolygonOverlay(
   dem: Dem,
   grid: TerrainGrid,
   style: SlabStyle,
-): THREE.BufferGeometry | null {
+  exclude?: Uint8Array,
+): OverlayResult {
   const { cols, rows, lons, lats } = grid;
   const cellsX = cols - 1;
   const cellsY = rows - 1;
@@ -104,8 +111,13 @@ export function buildPolygonOverlay(
     }
   }
 
+  // Higher-priority layers (e.g. water under greenery) keep their cells.
+  if (exclude) {
+    for (let k = 0; k < mask.length; k++) if (exclude[k]) mask[k] = 0;
+  }
+
   emitMask(positions, mask, grid, space, style);
-  return toGeometry(positions);
+  return { geometry: toGeometry(positions), mask };
 }
 
 /** Emit the masked cells as one watertight terrain-following layer. */
