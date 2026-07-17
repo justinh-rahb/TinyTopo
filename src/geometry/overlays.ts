@@ -198,6 +198,27 @@ function signedArea(ring: THREE.Vector2[]): number {
   return sum / 2;
 }
 
+/** Merge triangle-soup geometries into one (e.g. road ribbons + aprons). */
+export function mergeSoups(...geometries: Array<THREE.BufferGeometry | null>): THREE.BufferGeometry | null {
+  const present = geometries.filter((g): g is THREE.BufferGeometry => g !== null);
+  if (present.length === 0) return null;
+  if (present.length === 1) return present[0];
+  let total = 0;
+  for (const g of present) total += g.getAttribute('position').count * 3;
+  const positions = new Float32Array(total);
+  let offset = 0;
+  for (const g of present) {
+    const arr = g.getAttribute('position').array as Float32Array;
+    positions.set(arr, offset);
+    offset += arr.length;
+    g.dispose();
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function toGeometry(positions: number[]): THREE.BufferGeometry | null {
   if (positions.length === 0) return null;
   const geometry = new THREE.BufferGeometry();

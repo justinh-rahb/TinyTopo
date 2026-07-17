@@ -35,12 +35,52 @@ export function sampleGrid(bounds: Bounds, dem: Dem, widthMm: number, depthMm: n
   return { elev, cols, rows, lons, lats, minElevation: min };
 }
 
+/** How far the terrain slab sinks into the base, in mm, to guarantee overlap. */
+const EMBED_MM = 0.6;
+
 /**
- * Build a watertight terrain plinth: relief surface on top, vertical walls
- * down to Z=0, and a bottom face triangulated against the same perimeter
- * vertices (no T-junctions).
+ * Build the base plinth: a plain box from Z=0 to the base height, spanning
+ * the same footprint as the terrain grid. Separate body = separately
+ * colorable in multi-material slicers.
+ */
+export function buildBase(grid: TerrainGrid, space: ModelSpace): THREE.BufferGeometry {
+  const x0 = space.x(grid.lons[0]);
+  const x1 = space.x(grid.lons[grid.cols - 1]);
+  const y0 = space.y(grid.lats[0]);
+  const y1 = space.y(grid.lats[grid.rows - 1]);
+  const z1 = space.baseMm;
+
+  const positions: number[] = [];
+  const quad = (
+    a: [number, number, number],
+    b: [number, number, number],
+    c: [number, number, number],
+    d: [number, number, number],
+  ) => {
+    positions.push(...a, ...b, ...c, ...a, ...c, ...d);
+  };
+
+  quad([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]); // top (+Z)
+  quad([x0, y1, 0], [x1, y1, 0], [x1, y0, 0], [x0, y0, 0]); // bottom (-Z)
+  quad([x0, y0, 0], [x1, y0, 0], [x1, y0, z1], [x0, y0, z1]); // south
+  quad([x1, y0, 0], [x1, y1, 0], [x1, y1, z1], [x1, y0, z1]); // east
+  quad([x1, y1, 0], [x0, y1, 0], [x0, y1, z1], [x1, y1, z1]); // north
+  quad([x0, y1, 0], [x0, y0, 0], [x0, y0, z1], [x0, y1, z1]); // west
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/**
+ * Build a watertight terrain slab: relief surface on top, vertical walls
+ * down to just below the base top (embedding into the base body), and a
+ * bottom face triangulated against the same perimeter vertices
+ * (no T-junctions).
  */
 export function buildTerrain(grid: TerrainGrid, space: ModelSpace): THREE.BufferGeometry {
+  const bottomZ = Math.max(0, space.baseMm - EMBED_MM);
   const { elev, cols, rows, lons, lats } = grid;
   const positions: number[] = [];
 
@@ -76,19 +116,19 @@ export function buildTerrain(grid: TerrainGrid, space: ModelSpace): THREE.Buffer
   for (let i = cols - 2; i >= 0; i--) loop.push([topX[i], topY[rows - 1], topZ(i, rows - 1)]); // north E->W
   for (let j = rows - 2; j >= 1; j--) loop.push([topX[0], topY[j], topZ(0, j)]); // west N->S
 
-  // Walls down to Z=0 (outward normals).
+  // Walls down to the embedded bottom (outward normals).
   for (let k = 0; k < loop.length; k++) {
     const [ax, ay, az] = loop[k];
     const [bx, by, bz] = loop[(k + 1) % loop.length];
-    tri(ax, ay, 0, bx, by, 0, bx, by, bz);
-    tri(ax, ay, 0, bx, by, bz, ax, ay, az);
+    tri(ax, ay, bottomZ, bx, by, bottomZ, bx, by, bz);
+    tri(ax, ay, bottomZ, bx, by, bz, ax, ay, az);
   }
 
   // Bottom: fan from the center to every perimeter vertex (normals down).
   for (let k = 0; k < loop.length; k++) {
     const [ax, ay] = loop[k];
     const [bx, by] = loop[(k + 1) % loop.length];
-    tri(0, 0, 0, bx, by, 0, ax, ay, 0);
+    tri(0, 0, bottomZ, bx, by, bottomZ, ax, ay, bottomZ);
   }
 
   const geometry = new THREE.BufferGeometry();

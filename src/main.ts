@@ -3,11 +3,12 @@ import * as THREE from 'three';
 import { Bounds, ModelSpace, widthMeters, heightMeters } from './geo';
 import { loadDem } from './elevation';
 import { fetchMapFeatures, MapFeatures } from './overpass';
-import { sampleGrid, buildTerrain } from './geometry/terrain';
+import { sampleGrid, buildTerrain, buildBase } from './geometry/terrain';
 import { buildBuildings } from './geometry/buildings';
 import {
   buildPolygonOverlay,
   buildRoadOverlay,
+  mergeSoups,
   ROAD_STYLE,
   WATER_STYLE,
   GREEN_STYLE,
@@ -18,6 +19,7 @@ import { downloadThreeMf, NamedBody } from './export/threeMf';
 import { createMap, setupSearch } from './map';
 
 const COLORS = {
+  base: 0x3d3a36,
   terrain: 0x9a9080,
   buildings: 0xe8e4da,
   roads: 0x4f4a45,
@@ -95,6 +97,7 @@ async function generate(): Promise<void> {
     const grid = sampleGrid(bounds, dem, widthMm, depthMm);
     const space = new ModelSpace(bounds, widthMm, zFactor, baseMm, grid.minElevation);
     const bodies: NamedBody[] = [
+      { name: 'Base', geometry: buildBase(grid, space), color: COLORS.base },
       { name: 'Terrain', geometry: buildTerrain(grid, space), color: COLORS.terrain },
     ];
 
@@ -112,7 +115,14 @@ async function generate(): Promise<void> {
       }
       if (layers.roads) {
         setStatus(`Buffering ${features.roads.length} roads…`);
-        add('Roads', buildRoadOverlay(features.roads, bounds, space, dem, ROAD_STYLE), COLORS.roads);
+        add(
+          'Roads',
+          mergeSoups(
+            buildRoadOverlay(features.roads, bounds, space, dem, ROAD_STYLE),
+            buildPolygonOverlay(features.aprons, bounds, space, dem, ROAD_STYLE),
+          ),
+          COLORS.roads,
+        );
       }
       if (layers.buildings) {
         setStatus(`Extruding ${features.buildings.length} buildings…`);
