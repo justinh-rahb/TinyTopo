@@ -15,7 +15,8 @@ export class Preview {
   private group = new THREE.Group();
 
   constructor(private canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    // preserveDrawingBuffer lets snapshot() read pixels for 3MF thumbnails.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.scene.background = new THREE.Color(0x0b0d0f);
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
@@ -77,6 +78,20 @@ export class Preview {
         (child.material as THREE.Material).dispose();
       }
     }
+  }
+
+  /** Square PNG snapshot of the current view (for 3MF cover thumbnails). */
+  async snapshot(sizePx: number): Promise<Blob | null> {
+    this.renderer.render(this.scene, this.camera);
+    const src = this.canvas;
+    const side = Math.min(src.width, src.height);
+    const out = document.createElement('canvas');
+    out.width = sizePx;
+    out.height = sizePx;
+    const ctx = out.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(src, (src.width - side) / 2, (src.height - side) / 2, side, side, 0, 0, sizePx, sizePx);
+    return new Promise((resolve) => out.toBlob(resolve, 'image/png'));
   }
 
   private resize(): void {

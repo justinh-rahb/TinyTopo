@@ -166,7 +166,16 @@ btnDownload.addEventListener('click', () => {
   }
 });
 btnDownload3mf.addEventListener('click', () => {
-  if (exportBodies.length > 0) void downloadThreeMf(exportBodies, 'tinytopo.3mf');
+  if (exportBodies.length === 0) return;
+  void (async () => {
+    const large = await preview.snapshot(512);
+    const small = await preview.snapshot(128);
+    await downloadThreeMf(
+      exportBodies,
+      'tinytopo.3mf',
+      large && small ? { large, small } : undefined,
+    );
+  })();
 });
 
 if (import.meta.env.DEV) {
@@ -185,7 +194,9 @@ if (import.meta.env.DEV) {
     },
     threeMf: async () => {
       const { toThreeMf } = await import('./export/threeMf');
-      return toThreeMf(exportBodies);
+      const large = await preview.snapshot(512);
+      const small = await preview.snapshot(128);
+      return toThreeMf(exportBodies, large && small ? { large, small } : undefined);
     },
   };
 }
