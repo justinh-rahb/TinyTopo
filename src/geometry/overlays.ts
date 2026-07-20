@@ -29,15 +29,19 @@ const FLAT_ENOUGH_MM = 0.5;
 
 /**
  * Build one geometry from polygonal features (water, green, aprons) by
- * painting them onto the terrain grid: polygons rasterize to a cell mask and
- * the overlay top reuses the terrain's own vertex heights (plus lift), so
- * the surface follows the relief exactly — no poke-through, no seams.
+ * painting them onto the terrain grid: polygons rasterize to supersampled
+ * coverage, then marching squares extracts interpolated boundaries. Overlay
+ * vertices sample the same relief field as the terrain, plus lift, so there
+ * is no poke-through or separate boundary shell to seam.
  * Features smaller than a couple of grid cells are draped as slabs instead
  * so pitches and ponds don't vanish in rasterization.
  */
+/** Subcells per terrain-grid cell edge for coverage supersampling. */
+const SS = 4;
+
 export interface OverlayResult {
   geometry: THREE.BufferGeometry | null;
-  /** Grid cells this layer claimed — pass as `exclude` to lower layers. */
+  /** Supersampled coverage this layer claimed — pass as `exclude` below it. */
   mask: Uint8Array;
 }
 
@@ -53,7 +57,9 @@ export function buildPolygonOverlay(
   const { cols, rows, lons, lats } = grid;
   const cellsX = cols - 1;
   const cellsY = rows - 1;
-  const mask = new Uint8Array(cellsX * cellsY);
+  const subCols = cellsX * SS;
+  const subRows = cellsY * SS;
+  const mask = new Uint8Array(subCols * subRows);
   const gx = (lon: number) => ((lon - lons[0]) / (lons[cols - 1] - lons[0])) * cellsX;
   const gy = (lat: number) => ((lat - lats[0]) / (lats[rows - 1] - lats[0])) * cellsY;
 
@@ -82,15 +88,14 @@ export function buildPolygonOverlay(
         continue;
       }
 
-      // Even-odd scanline fill across all rings (outer + holes). Edges are
-      // quantized to the grid — at grid resolution finer than the print
-      // nozzle, that's invisible on the printed part, and one uniform
-      // strategy stays watertight with no seams between styles.
+      // Even-odd scanline fill across all rings (outer + holes), supersampled
+      // inside each terrain cell. The final mesh is still emitted against the
+      // terrain grid, but the boundary crossings below get subcell precision.
       const gridRings = [outer, ...holes].map((r) => r.map(([lon, lat]) => [gx(lon), gy(lat)]));
-      const j0 = Math.max(0, Math.floor(yMin));
-      const j1 = Math.min(cellsY - 1, Math.ceil(yMax));
+      const j0 = Math.max(0, Math.floor(yMin * SS - 0.5));
+      const j1 = Math.min(subRows - 1, Math.ceil(yMax * SS - 0.5));
       for (let j = j0; j <= j1; j++) {
-        const yc = j + 0.5;
+        const yc = (j + 0.5) / SS;
         const crossings: number[] = [];
         for (const ring of gridRings) {
           for (let k = 0; k < ring.length; k++) {
@@ -103,9 +108,9 @@ export function buildPolygonOverlay(
         }
         crossings.sort((a, b) => a - b);
         for (let k = 0; k + 1 < crossings.length; k += 2) {
-          const i0 = Math.max(0, Math.ceil(crossings[k] - 0.5));
-          const i1 = Math.min(cellsX - 1, Math.floor(crossings[k + 1] - 0.5));
-          for (let i = i0; i <= i1; i++) mask[j * cellsX + i] = 1;
+          const i0 = Math.max(0, Math.ceil(crossings[k] * SS - 0.5));
+          const i1 = Math.min(subCols - 1, Math.floor(crossings[k + 1] * SS - 0.5));
+          for (let i = i0; i <= i1; i++) mask[j * subCols + i] = 1;
         }
       }
     }
@@ -116,12 +121,12 @@ export function buildPolygonOverlay(
     for (let k = 0; k < mask.length; k++) if (exclude[k]) mask[k] = 0;
   }
 
-  emitMask(positions, mask, grid, space, style);
+  emitMarchingMask(positions, mask, grid, space, style);
   return { geometry: toGeometry(positions), mask };
 }
 
-/** Emit the masked cells as one watertight terrain-following layer. */
-function emitMask(
+/** Emit supersampled coverage as one watertight terrain-following layer. */
+function emitMarchingMask(
   out: number[],
   mask: Uint8Array,
   grid: TerrainGrid,
@@ -131,34 +136,148 @@ function emitMask(
   const { cols, rows, lons, lats, elev } = grid;
   const cellsX = cols - 1;
   const cellsY = rows - 1;
+  const subCols = cellsX * SS;
+  const subRows = cellsY * SS;
   const X = new Float32Array(cols);
   for (let i = 0; i < cols; i++) X[i] = space.x(lons[i]);
   const Y = new Float32Array(rows);
   for (let j = 0; j < rows; j++) Y[j] = space.y(lats[j]);
-  const zTop = (i: number, j: number) => space.z(elev[j * cols + i]) + style.liftMm;
-  const zBot = (i: number, j: number) => Math.max(0, zTop(i, j) - style.thicknessMm);
-  const at = (i: number, j: number) => (j >= 0 && j < cellsY && i >= 0 && i < cellsX ? mask[j * cellsX + i] : 0);
+  const atSub = (i: number, j: number) => (j >= 0 && j < subRows && i >= 0 && i < subCols ? mask[j * subCols + i] : 0);
+  const coverage = (i: number, j: number) => {
+    let n = 0;
+    for (let sy = j * SS; sy < (j + 1) * SS; sy++) {
+      for (let sx = i * SS; sx < (i + 1) * SS; sx++) n += atSub(sx, sy);
+    }
+    return n / (SS * SS);
+  };
+  const scalar = new Float32Array(cols * rows);
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      let sum = 0;
+      let n = 0;
+      for (let cy = j - 1; cy <= j; cy++) {
+        for (let cx = i - 1; cx <= i; cx++) {
+          if (cx < 0 || cy < 0 || cx >= cellsX || cy >= cellsY) continue;
+          sum += coverage(cx, cy);
+          n++;
+        }
+      }
+      scalar[j * cols + i] = n === 0 ? 0 : sum / n;
+    }
+  }
 
-  const wall = (ai: number, aj: number, bi: number, bj: number) => {
-    // Walking a->b with the solid on the left gives outward normals.
-    out.push(X[ai], Y[aj], zBot(ai, aj), X[bi], Y[bj], zBot(bi, bj), X[bi], Y[bj], zTop(bi, bj));
-    out.push(X[ai], Y[aj], zBot(ai, aj), X[bi], Y[bj], zTop(bi, bj), X[ai], Y[aj], zTop(ai, aj));
+  interface Vertex {
+    x: number;
+    y: number;
+    zTop: number;
+    zBot: number;
+  }
+  const vertices: Vertex[] = [];
+  const vertexIds = new Map<string, number>();
+  const directed = new Set<string>();
+  const iso = 0.5;
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  const edgeT = (a: number, b: number) => {
+    const d = b - a;
+    return Math.abs(d) < 1e-9 ? 0.5 : THREE.MathUtils.clamp((iso - a) / d, 0, 1);
+  };
+  const sampleVertex = (gx: number, gy: number): Vertex => {
+    const i0 = Math.min(cellsX - 1, Math.max(0, Math.floor(gx)));
+    const j0 = Math.min(cellsY - 1, Math.max(0, Math.floor(gy)));
+    const tx = gx - i0;
+    const ty = gy - j0;
+    const x = lerp(X[i0], X[i0 + 1], tx);
+    const y = lerp(Y[j0], Y[j0 + 1], ty);
+    const z00 = elev[j0 * cols + i0];
+    const z10 = elev[j0 * cols + i0 + 1];
+    const z01 = elev[(j0 + 1) * cols + i0];
+    const z11 = elev[(j0 + 1) * cols + i0 + 1];
+    const zMeters = lerp(lerp(z00, z10, tx), lerp(z01, z11, tx), ty);
+    const zTop = space.z(zMeters) + style.liftMm;
+    return { x, y, zTop, zBot: Math.max(0, zTop - style.thicknessMm) };
+  };
+  const vertexId = (key: string, gx: number, gy: number) => {
+    const existing = vertexIds.get(key);
+    if (existing !== undefined) return existing;
+    const id = vertices.length;
+    vertices.push(sampleVertex(gx, gy));
+    vertexIds.set(key, id);
+    return id;
+  };
+  const corner = (i: number, j: number) => vertexId(`g:${i}:${j}`, i, j);
+  const bottom = (i: number, j: number, v0: number, v1: number) => {
+    const t = edgeT(v0, v1);
+    return vertexId(`h:${i}:${j}`, i + t, j);
+  };
+  const right = (i: number, j: number, v0: number, v1: number) => {
+    const t = edgeT(v0, v1);
+    return vertexId(`v:${i + 1}:${j}`, i + 1, j + t);
+  };
+  const top = (i: number, j: number, v0: number, v1: number) => {
+    const t = edgeT(v0, v1);
+    return vertexId(`h:${i}:${j + 1}`, i + t, j + 1);
+  };
+  const left = (i: number, j: number, v0: number, v1: number) => {
+    const t = edgeT(v0, v1);
+    return vertexId(`v:${i}:${j}`, i, j + t);
+  };
+
+  const pushTri = (a: number, b: number, c: number, topFace: boolean) => {
+    const ids = topFace ? [a, b, c] : [c, b, a];
+    for (const id of ids) {
+      const v = vertices[id];
+      out.push(v.x, v.y, topFace ? v.zTop : v.zBot);
+    }
+  };
+  const emitPoly = (poly: number[]) => {
+    if (poly.length < 3) return;
+    for (let k = 1; k + 1 < poly.length; k++) {
+      const a = poly[0], b = poly[k], c = poly[k + 1];
+      pushTri(a, b, c, true);
+      pushTri(a, b, c, false);
+      directed.add(`${a}_${b}`).add(`${b}_${c}`).add(`${c}_${a}`);
+    }
   };
 
   for (let j = 0; j < cellsY; j++) {
     for (let i = 0; i < cellsX; i++) {
-      if (!at(i, j)) continue;
-      // Top (CCW from above) and mirrored bottom.
-      out.push(X[i], Y[j], zTop(i, j), X[i + 1], Y[j], zTop(i + 1, j), X[i + 1], Y[j + 1], zTop(i + 1, j + 1));
-      out.push(X[i], Y[j], zTop(i, j), X[i + 1], Y[j + 1], zTop(i + 1, j + 1), X[i], Y[j + 1], zTop(i, j + 1));
-      out.push(X[i + 1], Y[j + 1], zBot(i + 1, j + 1), X[i + 1], Y[j], zBot(i + 1, j), X[i], Y[j], zBot(i, j));
-      out.push(X[i], Y[j + 1], zBot(i, j + 1), X[i + 1], Y[j + 1], zBot(i + 1, j + 1), X[i], Y[j], zBot(i, j));
-
-      if (!at(i, j - 1)) wall(i, j, i + 1, j); // south edge
-      if (!at(i + 1, j)) wall(i + 1, j, i + 1, j + 1); // east edge
-      if (!at(i, j + 1)) wall(i + 1, j + 1, i, j + 1); // north edge
-      if (!at(i - 1, j)) wall(i, j + 1, i, j); // west edge
+      const v00 = scalar[j * cols + i];
+      const v10 = scalar[j * cols + i + 1];
+      const v11 = scalar[(j + 1) * cols + i + 1];
+      const v01 = scalar[(j + 1) * cols + i];
+      switch ((v00 >= iso ? 1 : 0) | (v10 >= iso ? 2 : 0) | (v11 >= iso ? 4 : 0) | (v01 >= iso ? 8 : 0)) {
+        case 0: break;
+        case 1: emitPoly([corner(i, j), bottom(i, j, v00, v10), left(i, j, v00, v01)]); break;
+        case 2: emitPoly([corner(i + 1, j), right(i, j, v10, v11), bottom(i, j, v00, v10)]); break;
+        case 3: emitPoly([corner(i, j), corner(i + 1, j), right(i, j, v10, v11), left(i, j, v00, v01)]); break;
+        case 4: emitPoly([corner(i + 1, j + 1), top(i, j, v01, v11), right(i, j, v10, v11)]); break;
+        case 5:
+          emitPoly([corner(i, j), bottom(i, j, v00, v10), left(i, j, v00, v01)]);
+          emitPoly([corner(i + 1, j + 1), top(i, j, v01, v11), right(i, j, v10, v11)]);
+          break;
+        case 6: emitPoly([corner(i + 1, j), corner(i + 1, j + 1), top(i, j, v01, v11), bottom(i, j, v00, v10)]); break;
+        case 7: emitPoly([corner(i, j), corner(i + 1, j), corner(i + 1, j + 1), top(i, j, v01, v11), left(i, j, v00, v01)]); break;
+        case 8: emitPoly([corner(i, j + 1), left(i, j, v00, v01), top(i, j, v01, v11)]); break;
+        case 9: emitPoly([corner(i, j), bottom(i, j, v00, v10), top(i, j, v01, v11), corner(i, j + 1)]); break;
+        case 10:
+          emitPoly([corner(i + 1, j), right(i, j, v10, v11), bottom(i, j, v00, v10)]);
+          emitPoly([corner(i, j + 1), left(i, j, v00, v01), top(i, j, v01, v11)]);
+          break;
+        case 11: emitPoly([corner(i, j), corner(i + 1, j), right(i, j, v10, v11), top(i, j, v01, v11), corner(i, j + 1)]); break;
+        case 12: emitPoly([corner(i, j + 1), left(i, j, v00, v01), right(i, j, v10, v11), corner(i + 1, j + 1)]); break;
+        case 13: emitPoly([corner(i, j), bottom(i, j, v00, v10), right(i, j, v10, v11), corner(i + 1, j + 1), corner(i, j + 1)]); break;
+        case 14: emitPoly([corner(i + 1, j), corner(i + 1, j + 1), corner(i, j + 1), left(i, j, v00, v01), bottom(i, j, v00, v10)]); break;
+        case 15: emitPoly([corner(i, j), corner(i + 1, j), corner(i + 1, j + 1), corner(i, j + 1)]); break;
+      }
     }
+  }
+
+  for (const key of directed) {
+    const [a, b] = key.split('_').map(Number);
+    if (directed.has(`${b}_${a}`)) continue;
+    const va = vertices[a], vb = vertices[b];
+    out.push(va.x, va.y, va.zBot, vb.x, vb.y, vb.zBot, vb.x, vb.y, vb.zTop);
+    out.push(va.x, va.y, va.zBot, vb.x, vb.y, vb.zTop, va.x, va.y, va.zTop);
   }
 }
 
