@@ -307,10 +307,9 @@ export function buildRoadOverlay(
 }
 
 /**
- * Drape a polygon over relief by clipping it into grid cells, each draped as
- * its own small watertight slab (touching shells union in the slicer, same
- * as adjacent buildings). Large flat triangles no longer span hills — the
- * fix for "the green layer struggles on steep terrain".
+ * Drape a polygon over relief by clipping it into grid cells that share one
+ * watertight mesh. Large flat triangles no longer span hills, while matching
+ * cell edges cancel so only the polygon's true perimeter receives walls.
  */
 function appendSlabCelled(
   out: number[],
@@ -352,6 +351,7 @@ function appendSlabCelled(
   const cellsY = Math.max(1, Math.ceil(hMm / DRAPE_CELL_MM));
   const dLon = (lonMax - lonMin) / cellsX;
   const dLat = (latMax - latMin) / cellsY;
+  const shared: SharedSlabMesh = { vertices: [], vertexIds: new Map(), directed: new Set() };
   for (let cy = 0; cy < cellsY; cy++) {
     for (let cx = 0; cx < cellsX; cx++) {
       const cell = {
@@ -363,9 +363,10 @@ function appendSlabCelled(
       const outerC = clipRing(outer, cell);
       if (outerC.length < 3) continue;
       const holesC = holes.map((h) => clipRing(h, cell)).filter((h) => h.length >= 3);
-      appendSlab(out, outerC, holesC, space, dem, style, 0.05);
+      appendSlab(out, outerC, holesC, space, dem, style, 0.05, shared);
     }
   }
+  appendBoundaryWalls(out, shared.vertices, shared.directed);
 }
 
 /**
@@ -411,6 +412,19 @@ function bufferLineMm(pts: Array<[number, number]>, halfW: number): Array<[numbe
   return [...left, ...right.reverse()];
 }
 
+interface SlabVertex {
+  x: number;
+  y: number;
+  zTop: number;
+  zBot: number;
+}
+
+interface SharedSlabMesh {
+  vertices: SlabVertex[];
+  vertexIds: Map<string, number>;
+  directed: Set<string>;
+}
+
 /** Triangulate + drape a polygon (with holes) and give it slab thickness. */
 function appendSlab(
   out: number[],
@@ -420,6 +434,7 @@ function appendSlab(
   dem: Dem,
   style: SlabStyle,
   minAreaMm2: number = MIN_AREA_MM2,
+  shared?: SharedSlabMesh,
 ): void {
   // Clipping can emit duplicate consecutive/closing vertices, and
   // triangulateShape mutates rings to drop them — sanitize first so our
@@ -452,7 +467,7 @@ function appendSlab(
 
   const allRings = [oRing, ...hRings];
   const allV2 = [oV2, ...hV2];
-  const flat: Array<{ x: number; y: number; zTop: number; zBot: number }> = [];
+  const flat: SlabVertex[] = [];
   for (let r = 0; r < allRings.length; r++) {
     for (let i = 0; i < allRings[r].length; i++) {
       const [lon, lat] = allRings[r][i];
@@ -466,30 +481,54 @@ function appendSlab(
     }
   }
 
+  // Celled slabs share vertices and edge identities across clipping boundaries.
+  // This keeps the terrain subdivision while allowing interior walls to cancel.
+  const vertexIds = shared
+    ? flat.map((v) => sharedVertexId(shared, v))
+    : flat.map((_, i) => i);
+  const vertices = shared ? vertexIds.map((id) => shared.vertices[id]) : flat;
+
   const tri = (a: number, b: number, c: number, top: boolean) => {
     const [va, vb, vc] = top ? [a, b, c] : [c, b, a];
     for (const i of [va, vb, vc]) {
-      out.push(flat[i].x, flat[i].y, top ? flat[i].zTop : flat[i].zBot);
+      const v = vertices[i];
+      out.push(v.x, v.y, top ? v.zTop : v.zBot);
     }
   };
 
-  const directed = new Set<string>();
+  const directed = shared?.directed ?? new Set<string>();
   for (const [a, b, c] of faces) {
     tri(a, b, c, true);
     tri(a, b, c, false);
-    directed.add(`${a}_${b}`).add(`${b}_${c}`).add(`${c}_${a}`);
+    const ai = vertexIds[a], bi = vertexIds[b], ci = vertexIds[c];
+    directed.add(`${ai}_${bi}`).add(`${bi}_${ci}`).add(`${ci}_${ai}`);
   }
 
-  // Walls on the triangulation's actual boundary (directed edges with no
-  // reverse partner) — not on the input rings. Degenerate clipped rings can
-  // make earcut drop triangles; walls that follow the emitted faces keep the
-  // solid closed regardless. Top faces wind CCW, so a boundary edge a->b has
-  // the interior on its left, giving outward wall normals.
+  if (!shared) appendBoundaryWalls(out, vertices, directed);
+}
+
+function sharedVertexId(shared: SharedSlabMesh, vertex: SlabVertex): number {
+  // Adjacent clipping passes can differ by floating-point dust. A nanometre
+  // in model space is far below useful geometry precision but joins the cells.
+  const key = `${Math.round(vertex.x * 1e6)}_${Math.round(vertex.y * 1e6)}`;
+  const existing = shared.vertexIds.get(key);
+  if (existing !== undefined) return existing;
+  const id = shared.vertices.length;
+  shared.vertices.push(vertex);
+  shared.vertexIds.set(key, id);
+  return id;
+}
+
+/** Emit walls only on top-face edges that have no reverse partner. */
+function appendBoundaryWalls(out: number[], vertices: SlabVertex[], directed: Set<string>): void {
+  // Following emitted faces rather than input rings keeps the solid closed if
+  // earcut drops a degenerate triangle. CCW top faces put the solid on the left.
   for (const key of directed) {
     const [a, b] = key.split('_').map(Number);
     if (directed.has(`${b}_${a}`)) continue;
-    out.push(flat[a].x, flat[a].y, flat[a].zBot, flat[b].x, flat[b].y, flat[b].zBot, flat[b].x, flat[b].y, flat[b].zTop);
-    out.push(flat[a].x, flat[a].y, flat[a].zBot, flat[b].x, flat[b].y, flat[b].zTop, flat[a].x, flat[a].y, flat[a].zTop);
+    const va = vertices[a], vb = vertices[b];
+    out.push(va.x, va.y, va.zBot, vb.x, vb.y, vb.zBot, vb.x, vb.y, vb.zTop);
+    out.push(va.x, va.y, va.zBot, vb.x, vb.y, vb.zTop, va.x, va.y, va.zTop);
   }
 }
 
