@@ -1,5 +1,5 @@
 import osmtogeojson from 'osmtogeojson';
-import type { Feature, FeatureCollection, LineString, MultiPolygon, Polygon, Position } from 'geojson';
+import type { Feature, FeatureCollection, LineString, MultiLineString, MultiPolygon, Polygon, Position } from 'geojson';
 import { Bounds } from './geo';
 
 /** Public Overpass instances, tried in order. All request fair use. */
@@ -85,6 +85,7 @@ export async function fetchMapFeatures(bounds: Bounds): Promise<MapFeatures> {
   way["natural"="water"](${bbox});
   relation["natural"="water"]["type"="multipolygon"](${bbox});
   way["waterway"="riverbank"](${bbox});
+  way["natural"="coastline"](${bbox});
   way[~"^(leisure|landuse|natural)$"~"^(${GREEN_REGEX})$"](${bbox});
   relation[~"^(leisure|landuse|natural)$"~"^(${GREEN_REGEX})$"]["type"="multipolygon"](${bbox});
 );
@@ -125,6 +126,7 @@ out skel qt;`;
 
   const collection = osmtogeojson(data) as FeatureCollection;
   const result: MapFeatures = { buildings: [], roads: [], aprons: [], water: [], green: [] };
+  const coastlines: Position[][] = [];
 
   for (const f of collection.features) {
     const p = (f.properties ?? {}) as Record<string, string>;
@@ -141,7 +143,11 @@ out skel qt;`;
         widthM: taggedWidth ?? defaultWidth,
       });
 
-    if (isPolygonal && (p['building'] || p['building:part'])) {
+    if (p['natural'] === 'coastline' && f.geometry.type === 'LineString') {
+      coastlines.push(f.geometry.coordinates);
+    } else if (p['natural'] === 'coastline' && f.geometry.type === 'MultiLineString') {
+      coastlines.push(...(f.geometry as MultiLineString).coordinates);
+    } else if (isPolygonal && (p['building'] || p['building:part'])) {
       result.buildings.push(f as Feature<Polygon | MultiPolygon>);
     } else if (f.geometry.type === 'LineString' && p['highway'] && ROAD_WIDTHS[p['highway']]) {
       line(ROAD_WIDTHS[p['highway']]);
@@ -167,5 +173,195 @@ out skel qt;`;
       result.green.push(f as Feature<Polygon | MultiPolygon>);
     }
   }
+  result.water.push(...coastlineWaterFeatures(coastlines, bounds));
   return result;
+}
+
+/** Convert directed OSM coastlines (land left, sea right) into clipped ocean polygons. */
+export function coastlineWaterFeatures(lines: Position[][], bounds: Bounds): Feature<Polygon>[] {
+  const polygons: Position[][] = [];
+  const islands: Position[][] = [];
+
+  for (const line of stitchDirectedLines(lines)) {
+    if (line.length < 2) continue;
+    if (samePosition(line[0], line[line.length - 1])) {
+      islands.push(closeRing(line));
+      continue;
+    }
+
+    for (const clipped of clipLine(line, bounds)) {
+      if (clipped.length < 2) continue;
+      const start = clipped[0];
+      const end = clipped[clipped.length - 1];
+      if (!onBoundary(start, bounds) || !onBoundary(end, bounds)) continue;
+
+      const ccw = boundaryPathCcw(end, start, bounds);
+      const cw = [...boundaryPathCcw(start, end, bounds)].reverse();
+      const ccwRing = closeRing([...clipped, ...ccw.slice(1)]);
+      const cwRing = closeRing([...clipped, ...cw.slice(1)]);
+      // Following the coastline forward, ocean lies on the right: the ocean
+      // ring is therefore clockwise in lon/lat model space.
+      polygons.push(signedRingArea(ccwRing) < 0 ? ccwRing : cwRing);
+    }
+  }
+
+  if (polygons.length === 0 && islands.length > 0) {
+    polygons.push(closeRing([
+      [bounds.west, bounds.south],
+      [bounds.east, bounds.south],
+      [bounds.east, bounds.north],
+      [bounds.west, bounds.north],
+    ]));
+  }
+
+  return polygons.map((outer) => ({
+    type: 'Feature',
+    properties: { natural: 'water', source: 'coastline' },
+    geometry: {
+      type: 'Polygon',
+      coordinates: [outer, ...islands.filter((ring) => pointInRing(ring[0], outer))],
+    },
+  }));
+}
+
+/** Join adjacent coastline ways without reversing their semantic direction. */
+function stitchDirectedLines(lines: Position[][]): Position[][] {
+  const chains = lines.filter((line) => line.length >= 2).map((line) => [...line]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer: for (let i = 0; i < chains.length; i++) {
+      for (let j = i + 1; j < chains.length; j++) {
+        const a = chains[i], b = chains[j];
+        if (samePosition(a[a.length - 1], b[0])) {
+          chains[i] = [...a, ...b.slice(1)];
+        } else if (samePosition(b[b.length - 1], a[0])) {
+          chains[i] = [...b, ...a.slice(1)];
+        } else {
+          continue;
+        }
+        chains.splice(j, 1);
+        changed = true;
+        break outer;
+      }
+    }
+  }
+  return chains;
+}
+
+/** Liang-Barsky clip of a polyline, preserving each in-bounds run. */
+function clipLine(line: Position[], bounds: Bounds): Position[][] {
+  const pieces: Position[][] = [];
+  let current: Position[] = [];
+  for (let i = 0; i + 1 < line.length; i++) {
+    const segment = clipSegment(line[i], line[i + 1], bounds);
+    if (!segment) {
+      if (current.length >= 2) pieces.push(current);
+      current = [];
+      continue;
+    }
+    const [a, b] = segment;
+    if (current.length > 0 && samePosition(current[current.length - 1], a)) current.push(b);
+    else {
+      if (current.length >= 2) pieces.push(current);
+      current = [a, b];
+    }
+    if (!insideBounds(line[i + 1], bounds)) {
+      pieces.push(current);
+      current = [];
+    }
+  }
+  if (current.length >= 2) pieces.push(current);
+  return pieces;
+}
+
+function clipSegment(a: Position, b: Position, bounds: Bounds): [Position, Position] | null {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const p = [-dx, dx, -dy, dy];
+  const q = [a[0] - bounds.west, bounds.east - a[0], a[1] - bounds.south, bounds.north - a[1]];
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]) < 1e-15) {
+      if (q[i] < 0) return null;
+      continue;
+    }
+    const t = q[i] / p[i];
+    if (p[i] < 0) lo = Math.max(lo, t);
+    else hi = Math.min(hi, t);
+    if (lo > hi) return null;
+  }
+  return [
+    [a[0] + dx * lo, a[1] + dy * lo],
+    [a[0] + dx * hi, a[1] + dy * hi],
+  ];
+}
+
+/** Walk counter-clockwise around the selection boundary from `from` to `to`. */
+function boundaryPathCcw(from: Position, to: Position, bounds: Bounds): Position[] {
+  const w = bounds.east - bounds.west;
+  const h = bounds.north - bounds.south;
+  const perimeter = 2 * (w + h);
+  const corners: Array<[number, Position]> = [
+    [w, [bounds.east, bounds.south]],
+    [w + h, [bounds.east, bounds.north]],
+    [2 * w + h, [bounds.west, bounds.north]],
+    [perimeter, [bounds.west, bounds.south]],
+  ];
+  const startT = boundaryOffset(from, bounds);
+  let endT = boundaryOffset(to, bounds);
+  if (endT <= startT) endT += perimeter;
+  const path: Position[] = [from];
+  for (const [baseT, corner] of corners) {
+    let t = baseT;
+    while (t <= startT) t += perimeter;
+    if (t < endT) path.push(corner);
+  }
+  path.push(to);
+  return path;
+}
+
+function boundaryOffset(p: Position, bounds: Bounds): number {
+  const w = bounds.east - bounds.west;
+  const h = bounds.north - bounds.south;
+  const eps = Math.max(w, h) * 1e-9 + 1e-12;
+  if (Math.abs(p[1] - bounds.south) <= eps) return p[0] - bounds.west;
+  if (Math.abs(p[0] - bounds.east) <= eps) return w + p[1] - bounds.south;
+  if (Math.abs(p[1] - bounds.north) <= eps) return 2 * w + h - p[0] + bounds.west;
+  return 2 * w + 2 * h - p[1] + bounds.south;
+}
+
+function onBoundary(p: Position, bounds: Bounds): boolean {
+  const eps = Math.max(bounds.east - bounds.west, bounds.north - bounds.south) * 1e-9 + 1e-12;
+  return (
+    Math.abs(p[0] - bounds.west) <= eps || Math.abs(p[0] - bounds.east) <= eps ||
+    Math.abs(p[1] - bounds.south) <= eps || Math.abs(p[1] - bounds.north) <= eps
+  );
+}
+
+function insideBounds(p: Position, bounds: Bounds): boolean {
+  return p[0] >= bounds.west && p[0] <= bounds.east && p[1] >= bounds.south && p[1] <= bounds.north;
+}
+
+function closeRing(ring: Position[]): Position[] {
+  return samePosition(ring[0], ring[ring.length - 1]) ? ring : [...ring, ring[0]];
+}
+
+function samePosition(a: Position, b: Position): boolean {
+  return Math.abs(a[0] - b[0]) < 1e-12 && Math.abs(a[1] - b[1]) < 1e-12;
+}
+
+function signedRingArea(ring: Position[]): number {
+  let area = 0;
+  for (let i = 0; i + 1 < ring.length; i++) area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  return area / 2;
+}
+
+function pointInRing(point: Position, ring: Position[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a[1] > point[1]) !== (b[1] > point[1]) &&
+        point[0] < ((b[0] - a[0]) * (point[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
 }
