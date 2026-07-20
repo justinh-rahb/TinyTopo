@@ -102,7 +102,14 @@ out skel qt;`;
         signal: AbortSignal.timeout(45_000),
       });
       if (!resp.ok) throw new Error(`Overpass request failed: ${resp.status} ${resp.statusText}`);
-      data = await resp.json();
+      const json = (await resp.json()) as { remark?: string };
+      // Overloaded instances return HTTP 200 with a remark and no data —
+      // treat that as a failure so we fail over instead of silently
+      // rendering a bald model.
+      if (json.remark && /error|timed?[ _-]?out/i.test(json.remark)) {
+        throw new Error(`Overpass: ${json.remark}`);
+      }
+      data = json;
       break;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
