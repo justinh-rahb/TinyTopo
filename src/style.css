@@ -219,6 +219,24 @@ body {
   cursor: not-allowed;
 }
 
+#controls input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+#puzzle-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+}
+
+#puzzle-controls input[type='number'] {
+  width: 34px;
+  text-align: center;
+}
+
 #status {
   color: var(--accent);
   min-width: 120px;

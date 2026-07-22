@@ -17,6 +17,7 @@ import { Preview } from './preview';
 import { downloadStl } from './export/stl';
 import { downloadThreeMf, NamedBody } from './export/threeMf';
 import { createMap, setupSearch } from './map';
+import { buildPuzzlePieces, fitPuzzleGrid } from './geometry/puzzle';
 
 const COLORS = {
   base: 0x3d3a36,
@@ -35,6 +36,23 @@ const btnDownload3mf = el<HTMLButtonElement>('#btn-download-3mf');
 const status = el<HTMLSpanElement>('#status');
 const mapHint = el<HTMLDivElement>('#map-hint');
 const previewEmpty = el<HTMLDivElement>('#preview-empty');
+
+// Puzzle mode replaces Base+Terrain with cut pieces; map-detail layers
+// aren't cut into pieces yet, so they're forced off while it's active.
+const puzzleCheckbox = el<HTMLInputElement>('#opt-puzzle');
+const puzzleColsInput = el<HTMLInputElement>('#opt-puzzle-cols');
+const puzzleRowsInput = el<HTMLInputElement>('#opt-puzzle-rows');
+const layerCheckboxIds = ['#opt-buildings', '#opt-roads', '#opt-water', '#opt-green'];
+puzzleCheckbox.addEventListener('change', () => {
+  const on = puzzleCheckbox.checked;
+  puzzleColsInput.disabled = !on;
+  puzzleRowsInput.disabled = !on;
+  for (const id of layerCheckboxIds) {
+    const input = el<HTMLInputElement>(id);
+    input.disabled = on;
+    if (on) input.checked = false;
+  }
+});
 
 let selection: Bounds | null = null;
 let exportBodies: NamedBody[] = [];
@@ -67,11 +85,12 @@ async function generate(): Promise<void> {
     const widthMm = Number(el<HTMLInputElement>('#opt-width').value) || 120;
     const zFactor = Number(el<HTMLInputElement>('#opt-zscale').value) || 1.5;
     const baseMm = Number(el<HTMLInputElement>('#opt-base').value) || 4;
+    const puzzleOn = puzzleCheckbox.checked;
     const layers = {
-      buildings: checked('#opt-buildings'),
-      roads: checked('#opt-roads'),
-      water: checked('#opt-water'),
-      green: checked('#opt-green'),
+      buildings: !puzzleOn && checked('#opt-buildings'),
+      roads: !puzzleOn && checked('#opt-roads'),
+      water: !puzzleOn && checked('#opt-water'),
+      green: !puzzleOn && checked('#opt-green'),
     };
     const wantDetails = Object.values(layers).some(Boolean);
 
@@ -96,10 +115,28 @@ async function generate(): Promise<void> {
     const depthMm = (hM / wM) * widthMm;
     const grid = sampleGrid(bounds, dem, widthMm, depthMm);
     const space = new ModelSpace(bounds, widthMm, zFactor, baseMm, grid.minElevation);
-    const bodies: NamedBody[] = [
-      { name: 'Base', geometry: buildBase(grid, space), color: COLORS.base },
-      { name: 'Terrain', geometry: buildTerrain(grid, space), color: COLORS.terrain },
-    ];
+
+    let bodies: NamedBody[];
+    if (puzzleOn) {
+      const requestedCols = Number(puzzleColsInput.value) || 3;
+      const requestedRows = Number(puzzleRowsInput.value) || 2;
+      const layout = fitPuzzleGrid(space.widthMm, space.depthMm, requestedCols, requestedRows);
+      setStatus(`Cutting ${layout.cols}×${layout.rows} puzzle pieces…`);
+      bodies = buildPuzzlePieces(bounds, space, dem, grid, layout).map((p) => ({
+        name: `Piece ${p.row + 1}-${p.col + 1}`,
+        geometry: p.geometry,
+        color: COLORS.terrain,
+      }));
+      if (layout.cols !== requestedCols || layout.rows !== requestedRows) {
+        puzzleColsInput.value = String(layout.cols);
+        puzzleRowsInput.value = String(layout.rows);
+      }
+    } else {
+      bodies = [
+        { name: 'Base', geometry: buildBase(grid, space), color: COLORS.base },
+        { name: 'Terrain', geometry: buildTerrain(grid, space), color: COLORS.terrain },
+      ];
+    }
 
     if (features) {
       const add = (name: string, geometry: THREE.BufferGeometry | null, color: number) => {
@@ -146,8 +183,9 @@ async function generate(): Promise<void> {
     btnDownload3mf.disabled = false;
 
     const tris = bodies.reduce((n, b) => n + b.geometry.getAttribute('position').count / 3, 0);
+    const pieceNote = puzzleOn ? `, ${bodies.length} pieces` : '';
     setStatus(
-      `Done — ${space.widthMm.toFixed(0)}×${space.depthMm.toFixed(0)} mm, ` +
+      `Done — ${space.widthMm.toFixed(0)}×${space.depthMm.toFixed(0)} mm${pieceNote}, ` +
         `${Math.round(tris).toLocaleString()} triangles (${dem.source})`,
     );
   } catch (err) {

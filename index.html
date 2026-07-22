@@ -73,6 +73,15 @@
         <label class="checkbox">
           <input id="opt-green" type="checkbox" checked /> Green
         </label>
+        <span id="puzzle-controls">
+          <label class="checkbox">
+            <input id="opt-puzzle" type="checkbox" /> Puzzle
+          </label>
+          <label>
+            <input id="opt-puzzle-cols" type="number" min="1" max="12" step="1" value="3" disabled /> &times;
+            <input id="opt-puzzle-rows" type="number" min="1" max="12" step="1" value="2" disabled /> pieces
+          </label>
+        </span>
         <button id="btn-generate" disabled>Generate</button>
         <button id="btn-download-3mf" disabled>Download 3MF</button>
         <button id="btn-download" disabled>Download STL</button>
