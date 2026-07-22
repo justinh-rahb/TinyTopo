@@ -62,26 +62,51 @@ function hashBounds(bounds: Bounds): number {
 }
 
 /**
- * Unit "flask" tab profile: dx/amp, dy/amp offsets along an edge, centered
- * at the edge midpoint. dy is signed depth into the neighbor; the sequence
- * deliberately backtracks in dx partway through (see the -0.42 → -0.49 →
- * -0.33 run) so the boundary has a true reentrant neck rather than a smooth
- * bump — the shape a physical puzzle piece actually needs to read as
- * "interlocking" rather than just wavy.
+ * Neck half-width as a fraction of the bulb radius. Small = a narrow,
+ * strongly reentrant neck (the piece geometrically cannot separate along
+ * the tab axis without traveling back through the same path); this is what
+ * makes the joint a real mechanical lock rather than a decorative wiggle.
  */
-const TAB_TEMPLATE: Array<[number, number]> = [
-  [-0.711, 0.0],
-  [-0.667, 0.267],
-  [-0.422, 0.333],
-  [-0.489, 0.667],
-  [-0.333, 0.911],
-  [0.0, 1.0],
-  [0.333, 0.911],
-  [0.489, 0.667],
-  [0.422, 0.333],
-  [0.667, 0.267],
-  [0.711, 0.0],
-];
+const NECK_RATIO = 0.38;
+/** Straight neck-corridor length before the bulb starts, as a fraction of bulb radius. */
+const NECK_DEPTH_RATIO = 0.12;
+const ARC_SEGMENTS = 20;
+
+/**
+ * Unit "keyhole" tab profile: dx/amp, dy/amp offsets along an edge, centered
+ * at the edge midpoint. dy is signed depth into the neighbor.
+ *
+ * Built from real circle geometry, not eyeballed points: a straight neck
+ * corridor of half-width `neckRatio` opens into a circular bulb of radius 1,
+ * and the boundary follows the bulb's major arc (the long way around,
+ * through the top) between the two points where the neck walls meet the
+ * circle. Because the neck is narrower than the bulb, the traced width
+ * profile genuinely narrows at the neck and widens into the bulb before
+ * closing at the apex — a true reentrant keyhole, not an offset bump.
+ */
+function buildTabTemplate(): Array<[number, number]> {
+  const R = 1;
+  const W = NECK_RATIO * R;
+  const half = Math.sqrt(R * R - W * W); // vertical drop from bulb center to the neck-wall intersection
+  const neckDepth = NECK_DEPTH_RATIO * R;
+  const centerY = neckDepth + half;
+  const apex = centerY + R;
+  const scale = 1 / apex; // normalize so the apex sits at dy = 1
+
+  const thetaLeft = Math.atan2(-half, -W);
+  const thetaRight = Math.atan2(-half, W);
+  const longWay = 2 * Math.PI - (thetaRight - thetaLeft);
+
+  const pts: Array<[number, number]> = [[-W * scale, 0]];
+  for (let k = 0; k <= ARC_SEGMENTS; k++) {
+    const theta = thetaLeft - (k * longWay) / ARC_SEGMENTS;
+    pts.push([R * Math.cos(theta) * scale, (centerY + R * Math.sin(theta)) * scale]);
+  }
+  pts.push([W * scale, 0]);
+  return pts;
+}
+
+const TAB_TEMPLATE: Array<[number, number]> = buildTabTemplate();
 
 /** Build a wiggled interior-edge curve from `a` to `b` (mm), or a straight run if `sign` is 0 (border). */
 function edgeCurve(a: [number, number], b: [number, number], sign: number, jitter: number, tabAmpMm: number): Position[] {
