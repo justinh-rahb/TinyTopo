@@ -29,10 +29,12 @@ Full details in [docs/SOURCES.md](docs/SOURCES.md).
 
 Alpha. Working today: rectangle selection, place search, terrain with real
 relief, extruded buildings (incl. building:part), roads, water, and greenery
-as colored layers, Three.js preview, binary STL export, and **multicolor 3MF
-export** — five named bodies ready for AMS/multi-material filament mapping.
-See the phased plan in [RESEARCH.md](RESEARCH.md) for what's next (Overture
-source, Manifold booleans, water cutout).
+as colored layers, Three.js preview, binary STL export, **multicolor 3MF
+export** ready for AMS/multi-material filament mapping, and **puzzle mode**
+— cut the terrain into interlocking jigsaw pieces, each its own watertight,
+printable object. See the phased plan in [RESEARCH.md](RESEARCH.md) for
+what's next (Overture source, Manifold booleans, water cutout, puzzle-cut
+map-detail layers).
 
 ## Develop
 
