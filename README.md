@@ -63,6 +63,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). No CLA, ever — contributions are
 accepted under the project license with a [DCO](https://developercertificate.org/)
 sign-off, so the project can never be relicensed or closed by any single party.
 
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/wildtang3nt)
+
 ## License
 
 - **Code:** [AGPL-3.0-or-later](LICENSE). Use it, fork it, deploy it — but
