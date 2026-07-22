@@ -234,6 +234,25 @@ body {
   color: var(--muted);
 }
 
+.github-icon-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  width: 16px;
+  height: 16px;
+  vertical-align: text-bottom;
+}
+
+.github-icon-link:hover {
+  color: var(--accent);
+}
+
+.github-icon-link svg {
+  width: 100%;
+  height: 100%;
+}
+
 .leaflet-container {
   font: inherit;
 }
